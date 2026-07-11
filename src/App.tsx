@@ -12,7 +12,7 @@ import type {
   Owner, Payment, PaymentKind, PaymentTiming, Priority, Project, ProjectTab, Resource, Task, TaskStatus, ViewName
 } from './types'
 import {
-  activeMeetingStatus, addMonthsIso, daysUntil, formatDate, formatMoney, fullDate, generateRecurring,
+  activeMeetingStatus, addMonthsIso, daysSince, daysUntil, formatDate, formatMoney, fullDate, generateRecurring,
   isOverdue, leadStageGroups, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
   nowIso, paymentTimingLabels, sumDue, sumReceived, taskStatusLabels, WORKSPACE_REALM_ID
 } from './utils'
@@ -239,11 +239,11 @@ function HomeView({ openProject, navigate }: { openProject: (id: string) => void
 
   const dueFollowUps = leads.filter((lead) => lead.followUpDate && daysUntil(lead.followUpDate) <= 7).sort((a, b) => (a.followUpDate ?? '').localeCompare(b.followUpDate ?? '')).slice(0, 3)
   const thisWeek = tasks.filter((task) => task.status === 'next' || task.status === 'in_progress').sort((a, b) => (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999')).slice(0, 6)
-  const backupAge = backups[0] ? Math.floor((Date.now() - new Date(backups[0].exportedAt).getTime()) / 86400000) : Infinity
+  const backupAge = backups[0] ? daysSince(backups[0].exportedAt) : Infinity
 
   return <div className="page">
     <PageHeader eyebrow="Today" title="What needs attention" description="Only active work and upcoming decisions." />
-    {backupAge >= 7 && <div className="gentle-banner"><Archive /><span><strong>Weekly backup is due.</strong> Export it from Settings when you have a quiet moment.</span><button onClick={() => navigate('settings')}>Open settings</button></div>}
+    {backupAge >= 30 && <div className="gentle-banner"><Archive /><span><strong>Monthly backup is due.</strong> Export it from Settings when you have a quiet moment.</span><button onClick={() => navigate('settings')}>Open settings</button></div>}
     <section className="attention-list" aria-label="Active projects">
       {projects.sort((a, b) => a.order - b.order).map((project) => {
         const projectMilestones = milestones.filter((m) => m.projectId === project.id).sort((a, b) => a.position - b.position)
@@ -540,6 +540,15 @@ function MeetingView({ currentUser, setToast, openProject, openEdit }: { current
   </div>
 }
 
+function BackupStatus({ exportedAt, exportedBy }: { exportedAt: string; exportedBy: Owner }) {
+  const days = daysSince(exportedAt)
+  const stale = days >= 30
+  const age = days <= 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`
+  return <p className={`last-backup ${stale ? 'backup-stale' : ''}`}>
+    Last export: {new Date(exportedAt).toLocaleString('en-GB')} by {exportedBy} ({age}){stale && ' — due for a fresh backup'}
+  </p>
+}
+
 function SettingsView({ currentUser, setToast }: { currentUser: Owner; setToast: (toast: ToastState) => void }) {
   const backups = useLiveQuery(() => db.backupExports.orderBy('exportedAt').reverse().toArray(), [], [])
   const [inviteEmail, setInviteEmail] = useState('')
@@ -573,7 +582,7 @@ function SettingsView({ currentUser, setToast }: { currentUser: Owner; setToast:
   return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="The technical details stay here, away from daily work." />
     <section className="settings-section"><div><Upload /><span><h2>Command Center import</h2><p>Use the prepared private JSON file once. Existing records with the same IDs are updated, not duplicated.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Import private file</button></section>
     <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{currentUser !== 'Moon' ? <p className="last-backup">Ask Moon to manage workspace membership.</p> : cloudEnabled ? <div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div> : <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div>}</section>
-    <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] && <p className="last-backup">Last export: {new Date(backups[0].exportedAt).toLocaleString('en-GB')} by {backups[0].exportedBy}</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
+    <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : <p className="last-backup backup-stale">No backup exported yet.</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
     <section className="settings-section"><div><ExternalLink /><span><h2>Impulse website</h2><p>The public website remains separate from this private workspace.</p></span></div><a className="secondary-button" href="https://papertowel2030-hub.github.io/Impulse/" target="_blank" rel="noreferrer">Open website <ExternalLink /></a></section>
   </div>
 }
