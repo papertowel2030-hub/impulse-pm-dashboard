@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.env.local
+dexie-cloud.json
+dexie-cloud.key
+*.zip
+IMPULS-Backup-*.xlsx
+migration/*.json
+.DS_Store
