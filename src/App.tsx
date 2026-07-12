@@ -839,7 +839,7 @@ function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToas
     if (!inviteEmail.trim()) return
     try {
       const members = (db as any).members
-      await members.add({ realmId, email: inviteEmail.trim().toLowerCase(), invite: true, permissions: { add: '*', update: '*', delete: '*' } })
+      await members.add({ realmId, email: inviteEmail.trim().toLowerCase(), invite: true, permissions: { manage: '*' } })
       setInviteEmail(''); setToast({ message: 'Invitation sent.' })
     } catch (error) { setToast({ message: error instanceof Error ? error.message : 'Could not send invitation.' }) }
   }

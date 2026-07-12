@@ -23,7 +23,7 @@ import {
   demoResources,
   demoTasks
 } from './seed'
-import { LEGACY_REALM_ID, nowIso, similarTitles, WORKSPACE_REALM_NAME } from './utils'
+import { LEGACY_REALM_ID, makeId, nowIso, similarTitles, WORKSPACE_REALM_NAME } from './utils'
 
 export const cloudUrl = (import.meta.env.VITE_DEXIE_CLOUD_URL as string | undefined)?.trim()
 export const cloudEnabled = Boolean(cloudUrl)
@@ -100,12 +100,25 @@ export function recordRealmId(): string {
 }
 
 /**
- * Creates the real shared workspace realm. Dexie Cloud assigns a valid "rlm…" id and makes
- * the creator its owner (owner is stamped at write time). Only the workspace owner should
- * call this, and only when no shared realm exists yet.
+ * Creates the real shared workspace realm — mirroring the pattern proven in the working
+ * Family Finance app. Three things are essential and were missing before:
+ *   1. an explicit "rlm"-prefixed realmId (not an auto-generated one),
+ *   2. an explicit `owner`, and
+ *   3. a self-membership row granting `manage: '*'`.
+ * Without the member record the Dexie Cloud server returns 403 on every write into the realm —
+ * being the realm's `owner` field alone does not grant sync/write access. All in one
+ * transaction so the realm and its ownership land together.
  */
 export async function createWorkspaceRealm(): Promise<string> {
-  return (await (db as any).realms.add({ name: WORKSPACE_REALM_NAME })) as string
+  const realmId = makeId('rlm')
+  const currentUserId = (db as any).cloud.currentUserId
+  await db.transaction('rw', [(db as any).realms, (db as any).members], async () => {
+    await (db as any).realms.add({ realmId, name: WORKSPACE_REALM_NAME, owner: currentUserId })
+    if (currentUserId) {
+      await (db as any).members.add({ realmId, userId: currentUserId, permissions: { manage: '*' } })
+    }
+  })
+  return realmId
 }
 
 /**
