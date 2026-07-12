@@ -166,26 +166,47 @@ function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: 
     () => cloudEnabled && isCloudLoggedIn ? (db as any).realms.toArray() : Promise.resolve([]),
     [isCloudLoggedIn], undefined
   ) as any[] | undefined
-  const shared = (realms ?? []).find((realm) => realm.realmId && realm.realmId !== userId)
+  // Sorted so the same device consistently resolves to the same realm across reloads. A past
+  // bug (fixed below) briefly let multiple duplicate shared realms get created server-side —
+  // this keeps behavior stable on one device even if stray duplicates still exist.
+  const shared = (realms ?? [])
+    .filter((realm) => realm.realmId && realm.realmId !== userId)
+    .sort((a, b) => (a.realmId < b.realmId ? -1 : 1))[0]
   const realmId: string | undefined = shared?.realmId
   const creatingRef = useRef(false)
   const [createError, setCreateError] = useState<string | undefined>(undefined)
 
   // Publish the resolved id to the record stamper and migrate any orphaned local records in.
+  // A brand-new realm exists locally the instant db.realms.add() resolves, well before that
+  // creation has reached the server — pushing first ensures the server has actually committed
+  // the realm before we fire a burst of writes that reference it.
   useEffect(() => {
     setActiveRealmId(cloudEnabled ? realmId : undefined)
-    if (realmId) restampLegacyRealm(realmId).catch(() => {})
+    if (!realmId || !cloudEnabled) return
+    ;(async () => {
+      try { await (db as any).cloud.sync({ purpose: 'push', wait: true }) } catch { /* offline: restamp still queues locally */ }
+      await restampLegacyRealm(realmId).catch(() => {})
+    })()
   }, [realmId])
 
   // Owner bootstrap: create the shared realm exactly once when logged in and none exists yet.
+  // Local IndexedDB starts empty on a fresh device, before anything has been pulled from the
+  // server — so we force a pull sync first and re-check, instead of racing ahead and creating
+  // a duplicate realm every time the app boots on a device that hasn't synced yet.
   useEffect(() => {
     if (!cloudEnabled || !isCloudLoggedIn || realms === undefined) return
     if (realmId || !isOwner || creatingRef.current) return
     creatingRef.current = true
-    createWorkspaceRealm().catch((error) => {
-      creatingRef.current = false
-      setCreateError(error instanceof Error ? error.message : String(error))
-    })
+    ;(async () => {
+      try { await (db as any).cloud.sync({ purpose: 'pull', wait: true }) } catch { /* offline: fall back to local state below */ }
+      const freshRealms: any[] = await (db as any).realms.toArray()
+      if (freshRealms.some((realm) => realm.realmId && realm.realmId !== userId)) { creatingRef.current = false; return }
+      try { await createWorkspaceRealm() }
+      catch (error) {
+        creatingRef.current = false
+        setCreateError(error instanceof Error ? error.message : String(error))
+      }
+    })()
   }, [isCloudLoggedIn, realms, realmId, isOwner])
 
   const status: RealmStatus =
