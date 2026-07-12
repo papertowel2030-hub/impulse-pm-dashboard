@@ -175,15 +175,18 @@ function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: 
     .sort((a, b) => (a.realmId < b.realmId ? -1 : 1))[0]
   const realmId: string | undefined = shared?.realmId
   const creatingRef = useRef(false)
+  const restampedRef = useRef(false)
   const [createError, setCreateError] = useState<string | undefined>(undefined)
 
   // Publish the resolved id to the record stamper and migrate any orphaned local records in.
   // A brand-new realm exists locally the instant db.realms.add() resolves, well before that
   // creation has reached the server — pushing first ensures the server has actually committed
-  // the realm before we fire a burst of writes that reference it.
+  // the realm before we fire a burst of writes that reference it. Guarded to run at most once
+  // so a re-resolving realmId can't re-trigger the migration.
   useEffect(() => {
     setActiveRealmId(cloudEnabled ? realmId : undefined)
-    if (!realmId || !cloudEnabled) return
+    if (!realmId || !cloudEnabled || restampedRef.current) return
+    restampedRef.current = true
     ;(async () => {
       try { await (db as any).cloud.sync({ purpose: 'push', wait: true }) } catch { /* offline: restamp still queues locally */ }
       await restampLegacyRealm(realmId).catch(() => {})

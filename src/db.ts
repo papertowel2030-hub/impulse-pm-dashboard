@@ -110,14 +110,22 @@ export async function createWorkspaceRealm(): Promise<string> {
 
 /**
  * Moves any local records still tagged with the old orphan realm id into the real shared
- * realm so they finally sync. Best-effort and idempotent — once nothing carries the legacy
- * id, this is a no-op.
+ * realm so they finally sync. Best-effort and idempotent.
+ *
+ * Critically, it only issues a modify on tables that ACTUALLY hold legacy records. A blanket
+ * `.modify()` scoped to the legacy realm is logged by Dexie Cloud as a sync mutation even when
+ * it matches nothing — and because that mutation references a realm the server doesn't know,
+ * the server rejects it and it jams the outbox forever. So we count first and skip empty
+ * tables entirely: with no legacy data anywhere, this does nothing and creates no mutations.
  */
 export async function restampLegacyRealm(newRealmId: string) {
   const tables = [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetings, db.meetingItems, db.leads, db.payments, db.resources] as unknown as Table<any>[]
+  const legacyCounts = await Promise.all(tables.map((table) => table.where('realmId').equals(LEGACY_REALM_ID).count()))
+  const toMigrate = tables.filter((_, index) => legacyCounts[index] > 0)
+  if (!toMigrate.length) return
   const stamp = nowIso()
-  await db.transaction('rw', tables, async () => {
-    for (const table of tables) {
+  await db.transaction('rw', toMigrate, async () => {
+    for (const table of toMigrate) {
       await table.where('realmId').equals(LEGACY_REALM_ID).modify({ realmId: newRealmId, updatedAt: stamp })
     }
   })
