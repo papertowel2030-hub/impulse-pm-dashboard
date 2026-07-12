@@ -5,7 +5,7 @@ import {
   FileCheck2, FolderKanban, Home, Lightbulb, Link2, LogIn, Menu, MessageSquareText, NotebookPen,
   Pencil, Plus, Repeat, Settings, Star, Target, Trash2, Upload, UserPlus, Users, Wallet, X
 } from 'lucide-react'
-import { db, cloudEnabled, seedIfEmpty, convertDeliverablesToPlan, convertPaidToPayments } from './db'
+import { db, cloudEnabled, seedIfEmpty, convertDeliverablesToPlan, convertPaidToPayments, deleteProjectPermanently } from './db'
 import { importWorkspaceFile } from './importData'
 import type {
   Lead, LeadStage, MeetingItem, MeetingItemStatus, Milestone, MilestoneStatus, ModalKind, Note,
@@ -49,6 +49,33 @@ function useCloudUser() {
   return user
 }
 
+const ownerEmails = ((import.meta.env.VITE_OWNER_EMAILS as string | undefined) ?? '')
+  .split(',').map((email) => email.trim().toLowerCase()).filter(Boolean)
+
+type AccessState = 'authorized' | 'signed-out' | 'checking' | 'denied'
+
+function useWorkspaceAccess(cloudUser: any, isCloudLoggedIn: boolean): AccessState {
+  const isOwner = Boolean(cloudUser?.email && ownerEmails.includes(String(cloudUser.email).toLowerCase()))
+  const workspaceRecordCount = useLiveQuery(
+    () => cloudEnabled && isCloudLoggedIn ? db.projects.where('realmId').equals(WORKSPACE_REALM_ID).count() : Promise.resolve(0),
+    [isCloudLoggedIn], 0
+  )
+  const hasWorkspaceAccess = (workspaceRecordCount ?? 0) > 0
+  const [pastGracePeriod, setPastGracePeriod] = useState(false)
+
+  useEffect(() => {
+    setPastGracePeriod(false)
+    if (!cloudEnabled || !isCloudLoggedIn || isOwner || hasWorkspaceAccess) return
+    const timer = window.setTimeout(() => setPastGracePeriod(true), 8000)
+    return () => window.clearTimeout(timer)
+  }, [isCloudLoggedIn, isOwner, hasWorkspaceAccess])
+
+  if (!cloudEnabled) return 'authorized'
+  if (!isCloudLoggedIn) return 'signed-out'
+  if (isOwner || hasWorkspaceAccess) return 'authorized'
+  return pastGracePeriod ? 'denied' : 'checking'
+}
+
 export default function App() {
   const [view, setView] = usePersistedState<ViewName>('impulse:view', 'home')
   const [selectedProjectId, setSelectedProjectId] = usePersistedState<string>('impulse:project', '')
@@ -60,15 +87,16 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const cloudUser = useCloudUser()
-  const isCloudLoggedIn = !cloudEnabled || Boolean(cloudUser?.isLoggedIn || cloudUser?.userId)
+  const isCloudLoggedIn = !cloudEnabled || Boolean(cloudUser?.isLoggedIn)
+  const access = useWorkspaceAccess(cloudUser, isCloudLoggedIn)
 
   useEffect(() => {
-    if (!isCloudLoggedIn) return
+    if (access !== 'authorized') return
     seedIfEmpty()
       .then(() => convertDeliverablesToPlan())
       .then(() => convertPaidToPayments())
       .catch((error) => setToast({ message: `Could not prepare workspace: ${error.message}` }))
-  }, [isCloudLoggedIn])
+  }, [access])
 
   useEffect(() => {
     if (!toast) return
@@ -78,9 +106,9 @@ export default function App() {
 
   const projects = useLiveQuery(() => db.projects.filter((project) => !project.archivedAt).toArray(), [], [])
 
-  if (cloudEnabled && !isCloudLoggedIn) {
-    return <LoginScreen />
-  }
+  if (access === 'signed-out') return <LoginScreen />
+  if (access === 'checking') return <CheckingAccessScreen />
+  if (access === 'denied') return <NotAuthorizedScreen email={cloudUser?.email} />
 
   const navigate = (next: ViewName) => {
     setView(next)
@@ -195,6 +223,39 @@ function LoginScreen() {
         <p>Sign in with the code sent to your email. There is no password to remember.</p>
         <button className="primary-button wide" onClick={login} disabled={busy}><LogIn /> {busy ? 'Opening sign in…' : 'Continue with email'}</button>
         {error && <p className="form-error">{error}</p>}
+      </div>
+    </main>
+  )
+}
+
+function CheckingAccessScreen() {
+  return (
+    <main className="login-screen">
+      <div className="login-card">
+        <span className="brand-mark large">⌁</span>
+        <p className="eyebrow">Impulse workspace</p>
+        <h1>Checking your access…</h1>
+        <p>Syncing your account with the workspace. This only takes a moment.</p>
+      </div>
+    </main>
+  )
+}
+
+function NotAuthorizedScreen({ email }: { email?: string }) {
+  const [busy, setBusy] = useState(false)
+  const signOut = async () => {
+    setBusy(true)
+    try { await (db as any).cloud.logout({ force: true }) }
+    finally { setBusy(false) }
+  }
+  return (
+    <main className="login-screen">
+      <div className="login-card">
+        <span className="brand-mark large">⌁</span>
+        <p className="eyebrow">Impulse workspace</p>
+        <h1>Not on this workspace yet.</h1>
+        <p>{email ? <>{email} isn't</> : 'This account isn\'t'} part of the Impulse workspace. Ask Moon to invite you from Settings → Partner access.</p>
+        <button className="primary-button wide" onClick={signOut} disabled={busy}><LogIn /> {busy ? 'Signing out…' : 'Try a different email'}</button>
       </div>
     </main>
   )
@@ -953,6 +1014,14 @@ function ProjectModal({ state, onClose, setToast, openProject }: { state: Projec
     onClose()
   }
 
+  const deleteProject = async () => {
+    if (!state.projectId || !existing) return
+    if (!window.confirm(`Permanently delete "${existing.name}"? This removes its plan, tasks, notes and links for good. This cannot be undone.`)) return
+    await deleteProjectPermanently(state.projectId)
+    setToast({ message: `${existing.name} permanently deleted.` })
+    onClose()
+  }
+
   return <div className="modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="project-modal-title"><header><div><p className="eyebrow">{isEdit ? 'Edit' : 'New'}</p><h2 id="project-modal-title">{isEdit ? 'Edit project' : 'New project'}</h2></div><button onClick={onClose} aria-label="Close"><X /></button></header><form onSubmit={save}>
     <label><span>Name</span><input ref={nameInput} value={name} onChange={(e) => setName(e.target.value)} placeholder="Client or project name" required /></label>
     <div className="form-row">
@@ -967,7 +1036,7 @@ function ProjectModal({ state, onClose, setToast, openProject }: { state: Projec
     </div>
     <div className="swatch-field"><span>Colour</span><div className="swatches" role="radiogroup" aria-label="Project colour">{projectColors.map((item) => <button type="button" key={item} className={`swatch ${color === item ? 'selected' : ''}`} style={{ background: item }} aria-label={`Colour ${item}`} onClick={() => setColor(item)}>{color === item && <Check />}</button>)}</div></div>
     {error && <p className="form-error">{error}</p>}
-    <footer>{isEdit && <button type="button" className="danger-link" onClick={archiveProject}>Archive project</button>}<span className="footer-spacer" /><button type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{isEdit ? 'Save project' : 'Create project'}</button></footer>
+    <footer>{isEdit && !existing?.archivedAt && <button type="button" className="danger-link" onClick={archiveProject}>Archive project</button>}{isEdit && existing?.archivedAt && <button type="button" className="danger-link" onClick={deleteProject}>Delete permanently</button>}<span className="footer-spacer" /><button type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{isEdit ? 'Save project' : 'Create project'}</button></footer>
   </form></section></div>
 }
 

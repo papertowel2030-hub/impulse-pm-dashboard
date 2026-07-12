@@ -32,6 +32,7 @@ jobs:
       - run: pnpm run build
         env:
           VITE_DEXIE_CLOUD_URL: ${{ vars.VITE_DEXIE_CLOUD_URL }}
+          VITE_OWNER_EMAILS: ${{ vars.VITE_OWNER_EMAILS }}
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

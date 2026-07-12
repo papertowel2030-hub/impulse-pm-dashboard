@@ -177,6 +177,24 @@ export async function convertPaidToPayments() {
   return created
 }
 
+export async function deleteProjectPermanently(projectId: string) {
+  await db.transaction(
+    'rw',
+    [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetingItems, db.resources],
+    async () => {
+      await Promise.all([
+        db.milestones.where('projectId').equals(projectId).delete(),
+        db.deliverables.where('projectId').equals(projectId).delete(),
+        db.tasks.where('projectId').equals(projectId).delete(),
+        db.notes.where('projectId').equals(projectId).delete(),
+        db.meetingItems.where('projectId').equals(projectId).delete(),
+        db.resources.where('projectId').equals(projectId).delete()
+      ])
+      await db.projects.delete(projectId)
+    }
+  )
+}
+
 export async function clearLocalData() {
   await db.transaction(
     'rw',
