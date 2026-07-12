@@ -180,7 +180,12 @@ export default function App() {
   const loggedInIdentity = useLoggedInIdentity(cloudEnabled ? cloudUser?.email : undefined)
   const currentUser: Owner = cloudEnabled ? (loggedInIdentity ?? 'Moon + Kira') : localUser
   const access = useWorkspaceAccess(isCloudLoggedIn, isOwner)
-  const signOut = async () => { await (db as any).cloud.logout({ force: true }) }
+  const signOut = async () => {
+    // No force: Dexie Cloud's own logout warns and asks for confirmation first if this
+    // device has edits that haven't synced yet, instead of silently discarding them.
+    try { await (db as any).cloud.logout() }
+    catch (error) { if (!(error instanceof Error && error.message.includes('cancelled'))) throw error }
+  }
 
   useEffect(() => {
     if (access !== 'authorized') return
@@ -347,7 +352,8 @@ function NotAuthorizedScreen({ email }: { email?: string }) {
   const [busy, setBusy] = useState(false)
   const signOut = async () => {
     setBusy(true)
-    try { await (db as any).cloud.logout({ force: true }) }
+    try { await (db as any).cloud.logout() }
+    catch (error) { if (!(error instanceof Error && error.message.includes('cancelled'))) throw error }
     finally { setBusy(false) }
   }
   return (
@@ -744,7 +750,12 @@ function SettingsView({ currentUser, isOwner, email, onSignOut, setToast }: { cu
     finally { setBusy(false); if (importInput.current) importInput.current.value = '' }
   }
   const [signingOut, setSigningOut] = useState(false)
-  const signOut = async () => { setSigningOut(true); try { await onSignOut() } finally { setSigningOut(false) } }
+  const signOut = async () => {
+    setSigningOut(true)
+    try { await onSignOut() }
+    catch (error) { setToast({ message: error instanceof Error ? error.message : 'Could not sign out.' }) }
+    finally { setSigningOut(false) }
+  }
   const resetDevice = async () => {
     if (!window.confirm('Reset this device? This clears the local copy of your data on this browser, including anything stuck waiting to sync. Records already synced to the cloud come back on reload. Do this, then import the private file again.')) return
     setBusy(true)
