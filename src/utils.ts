@@ -71,6 +71,17 @@ export const leadStageGroups: { key: string; label: string; stages: LeadStage[];
   { key: 'lost', label: 'Lost', stages: ['lost'], canonical: 'lost' }
 ]
 
+/** Only allow http(s) links — blocks javascript:/data: URIs from stored link fields. */
+export function isSafeUrl(url?: string) {
+  if (!url) return false
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 export function normalizeTitle(value: string) {
   return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 }
@@ -139,7 +150,8 @@ export function generateRecurring(options: {
 }): Payment[] {
   const groupId = makeId('paygroup')
   const stamp = nowIso()
-  return Array.from({ length: Math.max(1, options.count) }, (_, index) => {
+  const count = Math.min(120, Math.max(1, options.count))
+  return Array.from({ length: count }, (_, index) => {
     const dueDate = addMonthsIso(options.startDate, index)
     return {
       id: makeId('payment'),

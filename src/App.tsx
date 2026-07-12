@@ -13,7 +13,7 @@ import type {
 } from './types'
 import {
   activeMeetingStatus, addMonthsIso, daysSince, daysUntil, formatDate, formatMoney, fullDate, generateRecurring,
-  isOverdue, leadStageGroups, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
+  isOverdue, isSafeUrl, leadStageGroups, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
   nowIso, paymentTimingLabels, sumDue, sumReceived, taskStatusLabels, WORKSPACE_REALM_ID
 } from './utils'
 
@@ -49,15 +49,41 @@ function useCloudUser() {
   return user
 }
 
-const ownerEmails = ((import.meta.env.VITE_OWNER_EMAILS as string | undefined) ?? '')
-  .split(',').map((email) => email.trim().toLowerCase()).filter(Boolean)
+// Owner identity is stored as a hash, not plaintext, so the real email never ships in the public bundle.
+const ownerEmailHashes = ((import.meta.env.VITE_OWNER_EMAIL_HASHES as string | undefined) ?? '')
+  .split(',').map((hash) => hash.trim().toLowerCase()).filter(Boolean)
+
+async function sha256Hex(text: string) {
+  const buffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return Array.from(new Uint8Array(buffer)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function useIsOwner(email?: string) {
+  const [isOwner, setIsOwner] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    if (!email || !ownerEmailHashes.length) { setIsOwner(false); return }
+    sha256Hex(email.trim().toLowerCase()).then((hash) => { if (!cancelled) setIsOwner(ownerEmailHashes.includes(hash)) })
+    return () => { cancelled = true }
+  }, [email])
+  return isOwner
+}
 
 type AccessState = 'authorized' | 'signed-out' | 'checking' | 'denied'
 
-function useWorkspaceAccess(cloudUser: any, isCloudLoggedIn: boolean): AccessState {
-  const isOwner = Boolean(cloudUser?.email && ownerEmails.includes(String(cloudUser.email).toLowerCase()))
+function useWorkspaceAccess(isCloudLoggedIn: boolean, isOwner: boolean): AccessState {
+  // Any workspace-realm record counts as membership proof, not just projects — an
+  // empty-but-real workspace (no projects yet, only leads/notes) would otherwise
+  // wrongly deny an invited partner.
   const workspaceRecordCount = useLiveQuery(
-    () => cloudEnabled && isCloudLoggedIn ? db.projects.where('realmId').equals(WORKSPACE_REALM_ID).count() : Promise.resolve(0),
+    () => cloudEnabled && isCloudLoggedIn
+      ? Promise.all([
+          db.projects.where('realmId').equals(WORKSPACE_REALM_ID).count(),
+          db.leads.where('realmId').equals(WORKSPACE_REALM_ID).count(),
+          db.notes.where('realmId').equals(WORKSPACE_REALM_ID).count(),
+          db.tasks.where('realmId').equals(WORKSPACE_REALM_ID).count()
+        ]).then(([projects, leads, notes, tasks]) => projects + leads + notes + tasks)
+      : Promise.resolve(0),
     [isCloudLoggedIn], 0
   )
   const hasWorkspaceAccess = (workspaceRecordCount ?? 0) > 0
@@ -88,7 +114,8 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const cloudUser = useCloudUser()
   const isCloudLoggedIn = !cloudEnabled || Boolean(cloudUser?.isLoggedIn)
-  const access = useWorkspaceAccess(cloudUser, isCloudLoggedIn)
+  const isOwner = useIsOwner(cloudEnabled ? cloudUser?.email : undefined)
+  const access = useWorkspaceAccess(isCloudLoggedIn, isOwner)
 
   useEffect(() => {
     if (access !== 'authorized') return
@@ -194,7 +221,7 @@ export default function App() {
           )}
           {view === 'sales' && <ClientsView openModal={(recordId) => setModal({ kind: 'lead', recordId })} addLead={() => setModal({ kind: 'lead' })} />}
           {view === 'meeting' && <MeetingView currentUser={currentUser} setToast={setToast} openProject={openProject} openEdit={openQuickAdd} />}
-          {view === 'settings' && <SettingsView currentUser={currentUser} setToast={setToast} />}
+          {view === 'settings' && <SettingsView currentUser={currentUser} isOwner={isOwner} setToast={setToast} />}
         </main>
       </div>
 
@@ -409,7 +436,7 @@ function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, op
     <div className="project-heading">
       <div><p className="eyebrow">{project.clientType === 'internal' ? 'Internal project' : 'Client project'} · {project.phase}</p><h1>{project.name}</h1><p>{project.currentFocus}</p></div>
       <div className="project-heading-actions">
-        {project.driveFolderUrl && <a className="secondary-button" href={project.driveFolderUrl} target="_blank" rel="noreferrer"><Link2 /> Drive folder</a>}
+        {isSafeUrl(project.driveFolderUrl) && <a className="secondary-button" href={project.driveFolderUrl} target="_blank" rel="noreferrer"><Link2 /> Drive folder</a>}
         <button className="secondary-button" onClick={() => openProjectEdit(project.id)}><Pencil /> Edit project</button>
       </div>
     </div>
@@ -460,7 +487,7 @@ function PlanView({ project, openAdd, setToast }: { project: Project; openAdd: (
         <small>{milestone.owner}{milestone.dueDate ? ` · ${formatDate(milestone.dueDate)}` : ' · No deadline'}{milestone.deliverable ? ' · client receives this' : ''}</small>
       </button>
       <button className={`star-toggle ${milestone.deliverable ? 'on' : ''}`} aria-label={milestone.deliverable ? `Unmark ${milestone.title} as deliverable` : `Mark ${milestone.title} as deliverable`} title="Client deliverable" onClick={() => toggleDeliverable(milestone)}><Star /></button>
-      {milestone.driveUrl && <a href={milestone.driveUrl} target="_blank" rel="noreferrer" aria-label={`Open ${milestone.title}`}><ExternalLink /></a>}
+      {isSafeUrl(milestone.driveUrl) && <a href={milestone.driveUrl} target="_blank" rel="noreferrer" aria-label={`Open ${milestone.title}`}><ExternalLink /></a>}
       <StatusSelect value={milestone.status} options={milestoneStatuses} labels={milestoneStatusLabels} onChange={(value) => update(milestone, value as MilestoneStatus)} />
     </div>)}</div>
     {!milestones.length && <EmptyState text="No plan yet." action={<button className="primary-button" onClick={() => openAdd('milestone', project.id)}>Add the first step</button>} />}
@@ -490,7 +517,7 @@ function LinksView({ project, openAdd }: { project: Project; openAdd: (kind: Exc
   return <section><SectionTitle title="Links" action={<button className="primary-button" onClick={() => openAdd('link', project.id)}><Plus /> Add link</button>} />
     <div className="structured-list">{links.map((link) => <div className="structured-row" key={link.id}>
       <span className="link-type">{link.type}</span>
-      <span className="grow"><a className="link-name" href={link.url} target="_blank" rel="noreferrer"><strong>{link.name}</strong> <ExternalLink /></a><small>{link.owner}{link.notes ? ` · ${link.notes}` : ''}</small></span>
+      <span className="grow">{isSafeUrl(link.url) ? <a className="link-name" href={link.url} target="_blank" rel="noreferrer"><strong>{link.name}</strong> <ExternalLink /></a> : <span className="link-name"><strong>{link.name}</strong></span>}<small>{link.owner}{link.notes ? ` · ${link.notes}` : ''}</small></span>
       <button aria-label={`Edit ${link.name}`} onClick={() => openAdd('link', project.id, link.id)}><Pencil /></button>
     </div>)}</div>
     {!links.length && <EmptyState text="Demos, documents, profiles — keep every link you both need here." action={<button className="primary-button" onClick={() => openAdd('link', project.id)}>Add the first link</button>} />}
@@ -610,7 +637,7 @@ function BackupStatus({ exportedAt, exportedBy }: { exportedAt: string; exported
   </p>
 }
 
-function SettingsView({ currentUser, setToast }: { currentUser: Owner; setToast: (toast: ToastState) => void }) {
+function SettingsView({ currentUser, isOwner, setToast }: { currentUser: Owner; isOwner: boolean; setToast: (toast: ToastState) => void }) {
   const backups = useLiveQuery(() => db.backupExports.orderBy('exportedAt').reverse().toArray(), [], [])
   const [inviteEmail, setInviteEmail] = useState('')
   const [busy, setBusy] = useState(false)
@@ -618,6 +645,7 @@ function SettingsView({ currentUser, setToast }: { currentUser: Owner; setToast:
   const login = async () => { try { await (db as any).cloud.login({ grant_type: 'otp' }) } catch (error) { setToast({ message: error instanceof Error ? error.message : 'Could not sign in.' }) } }
   const invite = async () => {
     if (!cloudEnabled) return setToast({ message: 'Connect Dexie Cloud before sending an invitation.' })
+    if (!isOwner) return setToast({ message: 'Only the workspace owner can invite partners.' })
     if (!inviteEmail.trim()) return
     try {
       const members = (db as any).members
@@ -642,7 +670,7 @@ function SettingsView({ currentUser, setToast }: { currentUser: Owner; setToast:
   }
   return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="The technical details stay here, away from daily work." />
     <section className="settings-section"><div><Upload /><span><h2>Command Center import</h2><p>Use the prepared private JSON file once. Existing records with the same IDs are updated, not duplicated.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Import private file</button></section>
-    <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{currentUser !== 'Moon' ? <p className="last-backup">Ask Moon to manage workspace membership.</p> : cloudEnabled ? <div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div> : <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div>}</section>
+    <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
     <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : <p className="last-backup backup-stale">No backup exported yet.</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
     <section className="settings-section"><div><ExternalLink /><span><h2>Impulse website</h2><p>The public website remains separate from this private workspace.</p></span></div><a className="secondary-button" href="https://papertowel2030-hub.github.io/Impulse/" target="_blank" rel="noreferrer">Open website <ExternalLink /></a></section>
   </div>
@@ -732,7 +760,9 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
 
   const config = modalConfig(kind)
   const save = async (event: React.FormEvent) => {
-    event.preventDefault(); if (!title.trim()) return setError('Add a short title.'); setSaving(true); setError('')
+    event.preventDefault(); if (!title.trim()) return setError('Add a short title.')
+    if (url.trim() && (kind === 'task' || kind === 'milestone' || kind === 'deliverable' || kind === 'lead') && !isSafeUrl(url.trim())) return setError('Only http:// or https:// links are allowed.')
+    setSaving(true); setError('')
     const stamp = nowIso()
     const add = { realmId: WORKSPACE_REALM_ID, createdAt: stamp, createdBy: currentUser }
     try {
@@ -760,6 +790,7 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
       if (kind === 'link') {
         const data = { projectId, name: title.trim(), url: url.trim(), type: linkType.trim() || 'Link', owner, notes: notes || undefined, updatedAt: stamp }
         if (!data.url) { setSaving(false); return setError('Add the link URL.') }
+        if (!isSafeUrl(data.url)) { setSaving(false); return setError('Only http:// or https:// links are allowed.') }
         if (isEdit) await db.resources.update(state.recordId!, data)
         else await db.resources.add({ id: makeId('link'), ...add, ...data })
       }
@@ -947,12 +978,12 @@ function PaymentForm({ kind, leadId, startPosition, onDone, setToast }: { kind: 
     {kind === 'retainer' && <div className="form-row form-row-3">
       <label><span>Amount ₽ / month</span><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="20000" /></label>
       <label><span>Starts</span><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>
-      <label><span>Months</span><input type="number" min="1" value={count} onChange={(e) => setCount(e.target.value)} /></label>
+      <label><span>Months</span><input type="number" min="1" max="120" value={count} onChange={(e) => setCount(e.target.value)} /></label>
     </div>}
     {kind === 'share' && <div className="form-row form-row-3">
       <label><span>Share %</span><input type="number" min="0" value={percent} onChange={(e) => setPercent(e.target.value)} placeholder="10" /></label>
       <label><span>Starts</span><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>
-      <label><span>Months</span><input type="number" min="1" value={count} onChange={(e) => setCount(e.target.value)} /></label>
+      <label><span>Months</span><input type="number" min="1" max="120" value={count} onChange={(e) => setCount(e.target.value)} /></label>
     </div>}
     {kind === 'share' && <p className="payment-form-hint">Creates one row per month. Fill in each period's amount as it comes in.</p>}
     <div className="payment-form-actions"><button type="button" onClick={onDone}>Cancel</button><button type="button" className="primary-button" onClick={save}>Add</button></div>
@@ -989,6 +1020,7 @@ function ProjectModal({ state, onClose, setToast, openProject }: { state: Projec
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!name.trim()) return setError('Give the project a name.')
+    if (driveFolderUrl.trim() && !isSafeUrl(driveFolderUrl.trim())) return setError('Only http:// or https:// links are allowed.')
     const stamp = nowIso()
     const data = { name: name.trim(), clientType, phase: phase.trim() || (clientType === 'internal' ? 'Operations' : 'Getting started'), goal: goal.trim(), currentFocus: currentFocus.trim(), targetDate: targetDate || undefined, driveFolderUrl: driveFolderUrl || undefined, color, updatedAt: stamp }
     try {
