@@ -5,7 +5,7 @@ import {
   FileCheck2, FolderKanban, Home, Lightbulb, Link2, LogIn, LogOut, Menu, MessageSquareText, NotebookPen,
   Pencil, Plus, Repeat, Settings, Star, Target, Trash2, Upload, UserPlus, Users, Wallet, X
 } from 'lucide-react'
-import { db, cloudEnabled, seedIfEmpty, convertDeliverablesToPlan, convertPaidToPayments, deleteProjectPermanently } from './db'
+import { db, cloudEnabled, newId, seedIfEmpty, convertDeliverablesToPlan, convertPaidToPayments, deleteProjectPermanently } from './db'
 import { importWorkspaceFile } from './importData'
 import type {
   Lead, LeadStage, MeetingItem, MeetingItemStatus, Milestone, MilestoneStatus, ModalKind, Note,
@@ -610,10 +610,10 @@ function MeetingView({ currentUser, setToast, openProject, openEdit }: { current
     const liveNotes = noteFor(item)
     await db.meetingItems.update(item.id, { status, notes: liveNotes || undefined, updatedAt: nowIso() })
     if (status === 'action') {
-      await db.tasks.add({ id: makeId('task'), realmId: WORKSPACE_REALM_ID, projectId: item.projectId, title: item.title, owner: item.owner || currentUser, status: 'next', priority: 'normal', dueDate: item.dueDate, position: Date.now(), createdAt: nowIso(), updatedAt: nowIso(), notes: liveNotes ? `From the partner meeting: ${liveNotes}` : 'From the partner meeting.' })
+      await db.tasks.add({ id: newId('tasks', 'task'), realmId: WORKSPACE_REALM_ID, projectId: item.projectId, title: item.title, owner: item.owner || currentUser, status: 'next', priority: 'normal', dueDate: item.dueDate, position: Date.now(), createdAt: nowIso(), updatedAt: nowIso(), notes: liveNotes ? `From the partner meeting: ${liveNotes}` : 'From the partner meeting.' })
       setToast({ message: 'Added to the project board for this week.' })
     } else if (status === 'decision') {
-      await db.notes.add({ id: makeId('note'), realmId: WORKSPACE_REALM_ID, projectId: item.projectId, title: item.title, body: liveNotes || 'Agreed in the partner meeting.', kind: 'decision', author: currentUser, createdAt: nowIso(), updatedAt: nowIso(), createdBy: currentUser })
+      await db.notes.add({ id: newId('notes', 'note'), realmId: WORKSPACE_REALM_ID, projectId: item.projectId, title: item.title, body: liveNotes || 'Agreed in the partner meeting.', kind: 'decision', author: currentUser, createdAt: nowIso(), updatedAt: nowIso(), createdBy: currentUser })
       setToast({ message: 'Decision saved to the project notes.' })
     } else {
       setToast({ message: status === 'deferred' ? 'Topic will roll into the next meeting.' : 'Topic closed.' })
@@ -624,10 +624,10 @@ function MeetingView({ currentUser, setToast, openProject, openEdit }: { current
   const promoteIdea = async (idea: Note, to: 'agenda' | 'task') => {
     const stamp = nowIso()
     if (to === 'agenda') {
-      await db.meetingItems.add({ id: makeId('agenda'), realmId: WORKSPACE_REALM_ID, projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'open', owner: idea.author, createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
+      await db.meetingItems.add({ id: newId('meetingItems', 'agenda'), realmId: WORKSPACE_REALM_ID, projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'open', owner: idea.author, createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
       setToast({ message: 'Idea moved to the meeting agenda.' })
     } else {
-      await db.tasks.add({ id: makeId('task'), realmId: WORKSPACE_REALM_ID, projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'next', priority: 'normal', owner: idea.author, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
+      await db.tasks.add({ id: newId('tasks', 'task'), realmId: WORKSPACE_REALM_ID, projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'next', priority: 'normal', owner: idea.author, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
       setToast({ message: 'Idea turned into a task for this week.' })
     }
     await db.notes.update(idea.id, { archivedAt: stamp, updatedAt: stamp })
@@ -808,35 +808,35 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
       if (kind === 'task') {
         const data = { projectId, title: title.trim(), owner, dueDate: dueDate || undefined, status: (status || 'next') as TaskStatus, priority, notes: notes || undefined, driveUrl: url || undefined, updatedAt: stamp }
         if (isEdit) await db.tasks.update(state.recordId!, data)
-        else await db.tasks.add({ id: makeId('task'), ...add, ...data, position: Date.now() })
+        else await db.tasks.add({ id: newId('tasks', 'task'), ...add, ...data, position: Date.now() })
       }
       if (kind === 'note' || kind === 'idea') {
         const noteKind = (status || (kind === 'idea' ? 'idea' : 'note')) as Note['kind']
         const data = { projectId, title: title.trim(), body: notes || title.trim(), kind: noteKind, author: owner, updatedAt: stamp }
         if (isEdit) await db.notes.update(state.recordId!, data)
-        else await db.notes.add({ id: makeId('note'), ...add, ...data })
+        else await db.notes.add({ id: newId('notes', 'note'), ...add, ...data })
       }
       if (kind === 'discussion') {
         const data = { projectId, title: title.trim(), owner, dueDate: dueDate || undefined, notes: notes || undefined, updatedAt: stamp }
         if (isEdit) await db.meetingItems.update(state.recordId!, data)
-        else await db.meetingItems.add({ id: makeId('agenda'), ...add, ...data, status: 'open' })
+        else await db.meetingItems.add({ id: newId('meetingItems', 'agenda'), ...add, ...data, status: 'open' })
       }
       if (kind === 'milestone' || kind === 'deliverable') {
         const data = { projectId, title: title.trim(), owner, dueDate: dueDate || undefined, status: (status || 'not_started') as MilestoneStatus, notes: notes || undefined, driveUrl: url || undefined, deliverable: isDeliverable, updatedAt: stamp }
         if (isEdit) await db.milestones.update(state.recordId!, data)
-        else await db.milestones.add({ id: makeId('milestone'), ...add, ...data, position: Date.now() })
+        else await db.milestones.add({ id: newId('milestones', 'milestone'), ...add, ...data, position: Date.now() })
       }
       if (kind === 'link') {
         const data = { projectId, name: title.trim(), url: url.trim(), type: linkType.trim() || 'Link', owner, notes: notes || undefined, updatedAt: stamp }
         if (!data.url) { setSaving(false); return setError('Add the link URL.') }
         if (!isSafeUrl(data.url)) { setSaving(false); return setError('Only http:// or https:// links are allowed.') }
         if (isEdit) await db.resources.update(state.recordId!, data)
-        else await db.resources.add({ id: makeId('link'), ...add, ...data })
+        else await db.resources.add({ id: newId('resources', 'link'), ...add, ...data })
       }
       if (kind === 'lead') {
         const data = { business: title.trim(), owner, followUpDate: dueDate || undefined, stage: (status || 'prospect') as LeadStage, notes: notes || undefined, website: url || undefined, tariff: tariff || undefined, quoted: quoted ? Number(quoted) : undefined, updatedAt: stamp }
         if (isEdit) await db.leads.update(state.recordId!, data)
-        else await db.leads.add({ id: makeId('lead'), ...add, ...data, nextAction: 'Set the next action' })
+        else await db.leads.add({ id: newId('leads', 'lead'), ...add, ...data, nextAction: 'Set the next action' })
       }
       localStorage.removeItem(draftKey); setToast({ message: `${config.singular} saved.` }); onClose()
     } catch (err) { setError(err instanceof Error ? err.message : 'Could not save. Your draft is preserved.') }
@@ -986,7 +986,7 @@ function PaymentForm({ kind, leadId, startPosition, onDone, setToast }: { kind: 
     const stamp = nowIso()
     if (kind === 'one_off') {
       await db.payments.add({
-        id: makeId('payment'), realmId: WORKSPACE_REALM_ID, leadId, kind: 'one_off',
+        id: newId('payments', 'payment'), realmId: WORKSPACE_REALM_ID, leadId, kind: 'one_off',
         label: label.trim() || 'Payment', amount: amount ? Number(amount) : undefined,
         timing, dueDate: timing === 'date' ? (date || undefined) : undefined,
         status: 'due', position: startPosition, createdAt: stamp, updatedAt: stamp
@@ -998,7 +998,8 @@ function PaymentForm({ kind, leadId, startPosition, onDone, setToast }: { kind: 
         amount: kind === 'retainer' && amount ? Number(amount) : undefined,
         percent: kind === 'share' && percent ? Number(percent) : undefined,
         startDate: startDate || stamp.slice(0, 10),
-        count: Math.max(1, Number(count) || 1)
+        count: Math.max(1, Number(count) || 1),
+        makeRowId: () => newId('payments', 'payment')
       })
       rows.forEach((r, i) => { r.position = startPosition + i })
       await db.payments.bulkAdd(rows)
@@ -1068,7 +1069,7 @@ function ProjectModal({ state, onClose, setToast, openProject }: { state: Projec
         setToast({ message: 'Project updated.' })
       } else {
         const count = await db.projects.count()
-        const id = makeId('project')
+        const id = newId('projects', 'project')
         await db.projects.add({ id, realmId: WORKSPACE_REALM_ID, ...data, serviceType: clientType === 'internal' ? 'studio' : 'website', status: 'active', order: count + 1, createdAt: stamp, createdBy: undefined })
         setToast({ message: 'Project created. Add the first plan step.' })
         openProject(id)

@@ -146,15 +146,16 @@ function monthLabel(date: string) {
 /** Materialises a recurring arrangement into one dated payment row per month. */
 export function generateRecurring(options: {
   leadId: string; realmId: string; kind: PaymentKind; label: string
-  amount?: number; percent?: number; startDate: string; count: number; createdBy?: string
+  amount?: number; percent?: number; startDate: string; count: number; createdBy?: string; makeRowId?: () => string
 }): Payment[] {
   const groupId = makeId('paygroup')
   const stamp = nowIso()
   const count = Math.min(120, Math.max(1, options.count))
+  const makeRowId = options.makeRowId ?? (() => makeId('payment'))
   return Array.from({ length: count }, (_, index) => {
     const dueDate = addMonthsIso(options.startDate, index)
     return {
-      id: makeId('payment'),
+      id: makeRowId(),
       realmId: options.realmId,
       leadId: options.leadId,
       kind: options.kind,

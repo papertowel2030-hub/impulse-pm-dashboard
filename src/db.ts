@@ -66,6 +66,20 @@ class ImpulseDB extends Dexie {
 
 export const db = new ImpulseDB()
 
+/**
+ * Dexie Cloud's "@id" primary keys must start with a table-derived prefix (e.g. "prj" for
+ * projects) or every insert throws a ConstraintError — verified against the addon's
+ * generateOrVerifyAtKeys check. Locally (no cloud) any string id is fine, so fall back to the
+ * old readable prefix there.
+ */
+export function newId(tableName: keyof typeof db, fallbackPrefix: string) {
+  if (cloudEnabled) {
+    const prefix = (db.cloud.schema as Record<string, { idPrefix?: string }> | undefined)?.[tableName]?.idPrefix ?? ''
+    return `${prefix}${crypto.randomUUID()}`
+  }
+  return `${fallbackPrefix}-${crypto.randomUUID()}`
+}
+
 export async function seedIfEmpty() {
   const count = await db.projects.count()
   if (count > 0 || !import.meta.env.DEV) return
