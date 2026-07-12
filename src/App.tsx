@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
   Archive, CalendarDays, Check, ChevronDown, ChevronRight, CloudOff, Download, ExternalLink,
-  FileCheck2, FolderKanban, Home, Lightbulb, Link2, LogIn, Menu, MessageSquareText, NotebookPen,
+  FileCheck2, FolderKanban, Home, Lightbulb, Link2, LogIn, LogOut, Menu, MessageSquareText, NotebookPen,
   Pencil, Plus, Repeat, Settings, Star, Target, Trash2, Upload, UserPlus, Users, Wallet, X
 } from 'lucide-react'
 import { db, cloudEnabled, seedIfEmpty, convertDeliverablesToPlan, convertPaidToPayments, deleteProjectPermanently } from './db'
@@ -69,6 +69,27 @@ function useIsOwner(email?: string) {
   return isOwner
 }
 
+// Maps a signed-in member's hashed email to their real name, e.g. "hash1:Moon,hash2:Kira" —
+// so who a record is attributed to comes from who is actually logged in, not a self-picked label.
+const memberNameByHash: Record<string, Owner> = ((import.meta.env.VITE_MEMBER_EMAIL_HASHES as string | undefined) ?? '')
+  .split(',').map((pair) => pair.trim()).filter(Boolean)
+  .reduce((map, pair) => {
+    const [hash, name] = pair.split(':').map((part) => part.trim())
+    if (hash && (name === 'Moon' || name === 'Kira')) map[hash.toLowerCase()] = name
+    return map
+  }, {} as Record<string, Owner>)
+
+function useLoggedInIdentity(email?: string): Owner | undefined {
+  const [identity, setIdentity] = useState<Owner | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    if (!email || !Object.keys(memberNameByHash).length) { setIdentity(undefined); return }
+    sha256Hex(email.trim().toLowerCase()).then((hash) => { if (!cancelled) setIdentity(memberNameByHash[hash]) })
+    return () => { cancelled = true }
+  }, [email])
+  return identity
+}
+
 type AccessState = 'authorized' | 'signed-out' | 'checking' | 'denied'
 
 function useWorkspaceAccess(isCloudLoggedIn: boolean, isOwner: boolean): AccessState {
@@ -105,7 +126,9 @@ function useWorkspaceAccess(isCloudLoggedIn: boolean, isOwner: boolean): AccessS
 export default function App() {
   const [view, setView] = usePersistedState<ViewName>('impulse:view', 'home')
   const [selectedProjectId, setSelectedProjectId] = usePersistedState<string>('impulse:project', '')
-  const [currentUser, setCurrentUser] = usePersistedState<Owner>('impulse:user', 'Moon')
+  // Offline/dev fallback only — once cloud sync is on, identity comes from who is actually
+  // logged in (below), not a self-picked label, so attribution can't be spoofed.
+  const [localUser, setLocalUser] = usePersistedState<Owner>('impulse:user', 'Moon')
   const [projectTab, setProjectTab] = useState<ProjectTab>('overview')
   const [modal, setModal] = useState<ModalState>({ kind: null })
   const [projectModal, setProjectModal] = useState<ProjectModalState | null>(null)
@@ -115,7 +138,10 @@ export default function App() {
   const cloudUser = useCloudUser()
   const isCloudLoggedIn = !cloudEnabled || Boolean(cloudUser?.isLoggedIn)
   const isOwner = useIsOwner(cloudEnabled ? cloudUser?.email : undefined)
+  const loggedInIdentity = useLoggedInIdentity(cloudEnabled ? cloudUser?.email : undefined)
+  const currentUser: Owner = cloudEnabled ? (loggedInIdentity ?? 'Moon + Kira') : localUser
   const access = useWorkspaceAccess(isCloudLoggedIn, isOwner)
+  const signOut = async () => { await (db as any).cloud.logout({ force: true }) }
 
   useEffect(() => {
     if (access !== 'authorized') return
@@ -196,10 +222,20 @@ export default function App() {
               </button>
               {menuOpen && (
                 <div className="user-menu">
-                  <p>Working as</p>
-                  {owners.slice(0, 2).map((owner) => <button key={owner} onClick={() => { setCurrentUser(owner); setMenuOpen(false) }}>{owner}{currentUser === owner && <Check />}</button>)}
+                  {cloudEnabled ? (
+                    <>
+                      <p>Signed in as</p>
+                      <p className="user-menu-email">{cloudUser?.email ?? currentUser}</p>
+                    </>
+                  ) : (
+                    <>
+                      <p>Working as</p>
+                      {owners.slice(0, 2).map((owner) => <button key={owner} onClick={() => { setLocalUser(owner); setMenuOpen(false) }}>{owner}{currentUser === owner && <Check />}</button>)}
+                    </>
+                  )}
                   <hr />
                   <button onClick={() => navigate('settings')}><Settings /> Settings</button>
+                  {cloudEnabled && isCloudLoggedIn && <button onClick={() => { setMenuOpen(false); signOut() }}><LogOut /> Log out</button>}
                 </div>
               )}
             </div>
@@ -221,7 +257,7 @@ export default function App() {
           )}
           {view === 'sales' && <ClientsView openModal={(recordId) => setModal({ kind: 'lead', recordId })} addLead={() => setModal({ kind: 'lead' })} />}
           {view === 'meeting' && <MeetingView currentUser={currentUser} setToast={setToast} openProject={openProject} openEdit={openQuickAdd} />}
-          {view === 'settings' && <SettingsView currentUser={currentUser} isOwner={isOwner} setToast={setToast} />}
+          {view === 'settings' && <SettingsView currentUser={currentUser} isOwner={isOwner} email={cloudUser?.email} onSignOut={signOut} setToast={setToast} />}
         </main>
       </div>
 
@@ -637,7 +673,7 @@ function BackupStatus({ exportedAt, exportedBy }: { exportedAt: string; exported
   </p>
 }
 
-function SettingsView({ currentUser, isOwner, setToast }: { currentUser: Owner; isOwner: boolean; setToast: (toast: ToastState) => void }) {
+function SettingsView({ currentUser, isOwner, email, onSignOut, setToast }: { currentUser: Owner; isOwner: boolean; email?: string; onSignOut: () => Promise<void>; setToast: (toast: ToastState) => void }) {
   const backups = useLiveQuery(() => db.backupExports.orderBy('exportedAt').reverse().toArray(), [], [])
   const [inviteEmail, setInviteEmail] = useState('')
   const [busy, setBusy] = useState(false)
@@ -668,7 +704,10 @@ function SettingsView({ currentUser, isOwner, setToast }: { currentUser: Owner; 
     } catch (error) { setToast({ message: error instanceof Error ? error.message : 'Import failed.' }) }
     finally { setBusy(false); if (importInput.current) importInput.current.value = '' }
   }
+  const [signingOut, setSigningOut] = useState(false)
+  const signOut = async () => { setSigningOut(true); try { await onSignOut() } finally { setSigningOut(false) } }
   return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="The technical details stay here, away from daily work." />
+    {cloudEnabled && <section className="settings-section"><div><LogOut /><span><h2>Account</h2><p>Signed in as {email ?? currentUser}{isOwner ? ' · workspace owner' : ''}. Log out on any shared or borrowed device.</p></span></div><button className="secondary-button" onClick={signOut} disabled={signingOut}><LogOut /> {signingOut ? 'Signing out…' : 'Log out'}</button></section>}
     <section className="settings-section"><div><Upload /><span><h2>Command Center import</h2><p>Use the prepared private JSON file once. Existing records with the same IDs are updated, not duplicated.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Import private file</button></section>
     <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
     <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : <p className="last-backup backup-stale">No backup exported yet.</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
