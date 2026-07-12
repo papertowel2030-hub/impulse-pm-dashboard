@@ -49,6 +49,27 @@ function useCloudUser() {
   return user
 }
 
+/**
+ * Plain-language sync status, so "did my edits actually reach the server" never needs
+ * devtools to answer. Pending count mirrors what Dexie Cloud's own logout-confirmation
+ * dialog counts: rows still sitting in each table's "_mutations" outbox.
+ */
+function useSyncStatus() {
+  const [syncState, setSyncState] = useState<{ status: string; phase: string } | null>(null)
+  useEffect(() => {
+    if (!cloudEnabled) return
+    const subscription = (db as any).cloud.syncState.subscribe((next: any) => setSyncState({ status: next.status, phase: next.phase }))
+    return () => subscription?.unsubscribe?.()
+  }, [])
+  const pending = useLiveQuery(async () => {
+    if (!cloudEnabled) return 0
+    const mutationTables = db.tables.filter((t) => t.name.endsWith('_mutations'))
+    const counts = await Promise.all(mutationTables.map((t) => t.count()))
+    return counts.reduce((sum, count) => sum + count, 0)
+  }, [], 0)
+  return { phase: syncState?.phase, status: syncState?.status, pending: pending ?? 0 }
+}
+
 // Owner identity is stored as a hash, not plaintext, so the real email never ships in the public bundle.
 const ownerEmailHashes = ((import.meta.env.VITE_OWNER_EMAIL_HASHES as string | undefined) ?? '')
   .split(',').map((hash) => hash.trim().toLowerCase()).filter(Boolean)
@@ -746,8 +767,17 @@ function BackupStatus({ exportedAt, exportedBy }: { exportedAt: string; exported
   </p>
 }
 
+function SyncStatusLine({ phase, status, pending }: { phase?: string; status?: string; pending: number }) {
+  if (status === 'offline' || phase === 'offline') return <p className="sync-status sync-warn">Offline — changes save on this device and will sync once you're back online.</p>
+  if (status === 'error' || phase === 'error') return <p className="sync-status sync-error">Sync error — your latest changes may not have reached the server. Try reloading the page.</p>
+  if (pending > 0) return <p className="sync-status sync-pending">{pending} change{pending === 1 ? '' : 's'} waiting to sync…</p>
+  if (phase === 'in-sync') return <p className="sync-status sync-ok">All changes synced.</p>
+  return <p className="sync-status">Checking sync status…</p>
+}
+
 function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToast }: { currentUser: Owner; isOwner: boolean; email?: string; realmId?: string; onSignOut: () => Promise<void>; setToast: (toast: ToastState) => void }) {
   const backups = useLiveQuery(() => db.backupExports.orderBy('exportedAt').reverse().toArray(), [], [])
+  const syncStatus = useSyncStatus()
   const [inviteEmail, setInviteEmail] = useState('')
   const [busy, setBusy] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
@@ -792,7 +822,7 @@ function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToas
     catch (error) { setBusy(false); setToast({ message: error instanceof Error ? error.message : 'Reset failed.' }) }
   }
   return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="The technical details stay here, away from daily work." />
-    {cloudEnabled && <section className="settings-section"><div><LogOut /><span><h2>Account</h2><p>Signed in as {email ?? currentUser}{isOwner ? ' · workspace owner' : ''}. Log out on any shared or borrowed device.</p></span></div><button className="secondary-button" onClick={signOut} disabled={signingOut}><LogOut /> {signingOut ? 'Signing out…' : 'Log out'}</button></section>}
+    {cloudEnabled && <section className="settings-section"><div><LogOut /><span><h2>Account</h2><p>Signed in as {email ?? currentUser}{isOwner ? ' · workspace owner' : ''}. Log out on any shared or borrowed device.</p><SyncStatusLine {...syncStatus} /></span></div><button className="secondary-button" onClick={signOut} disabled={signingOut}><LogOut /> {signingOut ? 'Signing out…' : 'Log out'}</button></section>}
     <section className="settings-section"><div><Upload /><span><h2>Command Center import</h2><p>Use the prepared private JSON file once. Existing records with the same IDs are updated, not duplicated.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Import private file</button>{cloudEnabled && <details className="reset-details"><summary>Import keeps failing?</summary><p>If a sync error keeps returning on every refresh, reset this device to clear local data stuck from an older version, then import again.</p><button className="danger-link" onClick={resetDevice} disabled={busy}><Trash2 /> Reset this device</button></details>}</section>
     <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <><div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div><PartnerStatus ownEmail={email} realmId={realmId} /></> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
     <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : <p className="last-backup backup-stale">No backup exported yet.</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
