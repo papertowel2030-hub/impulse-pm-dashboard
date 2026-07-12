@@ -63,13 +63,14 @@ function useSyncStatus() {
     )
     return () => subscription?.unsubscribe?.()
   }, [])
-  const pending = useLiveQuery(async () => {
-    if (!cloudEnabled) return 0
+  const breakdown = useLiveQuery(async () => {
+    if (!cloudEnabled) return { total: 0, byTable: '' }
     const mutationTables = db.tables.filter((t) => t.name.endsWith('_mutations'))
-    const counts = await Promise.all(mutationTables.map((t) => t.count()))
-    return counts.reduce((sum, count) => sum + count, 0)
-  }, [], 0)
-  return { phase: syncState?.phase, status: syncState?.status, error: syncState?.error, pending: pending ?? 0 }
+    const counts = await Promise.all(mutationTables.map(async (t) => [t.name.replace(/^\$/, '').replace(/_mutations$/, ''), await t.count()] as const))
+    const nonZero = counts.filter(([, c]) => c > 0)
+    return { total: nonZero.reduce((s, [, c]) => s + c, 0), byTable: nonZero.map(([n, c]) => `${n}:${c}`).join(' ') }
+  }, [], { total: 0, byTable: '' })
+  return { phase: syncState?.phase, status: syncState?.status, error: syncState?.error, pending: breakdown?.total ?? 0, byTable: breakdown?.byTable ?? '' }
 }
 
 // Owner identity is stored as a hash, not plaintext, so the real email never ships in the public bundle.
@@ -811,12 +812,14 @@ function BackupStatus({ exportedAt, exportedBy }: { exportedAt: string; exported
   </p>
 }
 
-function SyncStatusLine({ phase, status, pending, error }: { phase?: string; status?: string; pending: number; error?: string }) {
-  if (status === 'offline' || phase === 'offline') return <p className="sync-status sync-warn">Offline — changes save on this device and will sync once you're back online.</p>
-  if (status === 'error' || phase === 'error') return <p className="sync-status sync-error">Sync error — your latest changes may not have reached the server.{error ? ` Details: ${error}` : ' Try reloading the page.'}</p>
-  if (pending > 0) return <p className="sync-status sync-pending">{pending} change{pending === 1 ? '' : 's'} waiting to sync…</p>
+function SyncStatusLine({ phase, status, pending, error, byTable }: { phase?: string; status?: string; pending: number; error?: string; byTable?: string }) {
+  // Temporary diagnostic detail appended while we chase a stuck-sync bug.
+  const diag = <span className="sync-diag"> · [{phase ?? '?'}/{status ?? '?'}{byTable ? ` · ${byTable}` : ''}{error ? ` · ${error}` : ''}]</span>
+  if (status === 'offline' || phase === 'offline') return <p className="sync-status sync-warn">Offline — changes save on this device and will sync once you're back online.{diag}</p>
+  if (status === 'error' || phase === 'error') return <p className="sync-status sync-error">Sync error — your latest changes may not have reached the server.{error ? ` Details: ${error}` : ' Try reloading the page.'}{diag}</p>
+  if (pending > 0) return <p className="sync-status sync-pending">{pending} change{pending === 1 ? '' : 's'} waiting to sync…{diag}</p>
   if (phase === 'in-sync') return <p className="sync-status sync-ok">All changes synced.</p>
-  return <p className="sync-status">Checking sync status…</p>
+  return <p className="sync-status">Checking sync status…{diag}</p>
 }
 
 function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToast }: { currentUser: Owner; isOwner: boolean; email?: string; realmId?: string; onSignOut: () => Promise<void>; setToast: (toast: ToastState) => void }) {

@@ -339,6 +339,7 @@ h3 { font-size: .95rem; }
 .sync-status.sync-pending { color: var(--warning); }
 .sync-status.sync-warn { color: var(--warning); }
 .sync-status.sync-error { color: var(--danger); }
+.sync-diag { font-family: var(--mono); font-size: .72rem; opacity: .7; }
 .settings-section details { margin-top: 18px; color: var(--muted); font-size: .83rem; }
 .settings-section summary { cursor: pointer; color: var(--ink); }
 .reset-details p { margin: 8px 0 2px; }
