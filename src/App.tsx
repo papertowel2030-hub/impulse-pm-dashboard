@@ -55,10 +55,12 @@ function useCloudUser() {
  * dialog counts: rows still sitting in each table's "_mutations" outbox.
  */
 function useSyncStatus() {
-  const [syncState, setSyncState] = useState<{ status: string; phase: string } | null>(null)
+  const [syncState, setSyncState] = useState<{ status: string; phase: string; error?: string } | null>(null)
   useEffect(() => {
     if (!cloudEnabled) return
-    const subscription = (db as any).cloud.syncState.subscribe((next: any) => setSyncState({ status: next.status, phase: next.phase }))
+    const subscription = (db as any).cloud.syncState.subscribe((next: any) =>
+      setSyncState({ status: next.status, phase: next.phase, error: next.error?.message ?? (next.error ? String(next.error) : undefined) })
+    )
     return () => subscription?.unsubscribe?.()
   }, [])
   const pending = useLiveQuery(async () => {
@@ -67,7 +69,7 @@ function useSyncStatus() {
     const counts = await Promise.all(mutationTables.map((t) => t.count()))
     return counts.reduce((sum, count) => sum + count, 0)
   }, [], 0)
-  return { phase: syncState?.phase, status: syncState?.status, pending: pending ?? 0 }
+  return { phase: syncState?.phase, status: syncState?.status, error: syncState?.error, pending: pending ?? 0 }
 }
 
 // Owner identity is stored as a hash, not plaintext, so the real email never ships in the public bundle.
@@ -159,7 +161,7 @@ type RealmStatus = 'loading' | 'ready' | 'none'
  * yet, it's created once. The resolved id is pushed to db.ts so new records get stamped with
  * it, and any records still carrying the old orphan realm id are migrated across.
  */
-function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: string): { realmId?: string; status: RealmStatus } {
+function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: string): { realmId?: string; status: RealmStatus; error?: string } {
   const realms = useLiveQuery(
     () => cloudEnabled && isCloudLoggedIn ? (db as any).realms.toArray() : Promise.resolve([]),
     [isCloudLoggedIn], undefined
@@ -167,6 +169,7 @@ function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: 
   const shared = (realms ?? []).find((realm) => realm.realmId && realm.realmId !== userId)
   const realmId: string | undefined = shared?.realmId
   const creatingRef = useRef(false)
+  const [createError, setCreateError] = useState<string | undefined>(undefined)
 
   // Publish the resolved id to the record stamper and migrate any orphaned local records in.
   useEffect(() => {
@@ -179,16 +182,20 @@ function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: 
     if (!cloudEnabled || !isCloudLoggedIn || realms === undefined) return
     if (realmId || !isOwner || creatingRef.current) return
     creatingRef.current = true
-    createWorkspaceRealm().catch(() => { creatingRef.current = false })
+    createWorkspaceRealm().catch((error) => {
+      creatingRef.current = false
+      setCreateError(error instanceof Error ? error.message : String(error))
+    })
   }, [isCloudLoggedIn, realms, realmId, isOwner])
 
   const status: RealmStatus =
     !cloudEnabled ? 'ready'
     : !isCloudLoggedIn || realms === undefined ? 'loading'
     : realmId ? 'ready'
+    : createError ? 'none'
     : isOwner || creatingRef.current ? 'loading'
     : 'none'
-  return { realmId, status }
+  return { realmId, status, error: createError }
 }
 
 function useWorkspaceAccess(isCloudLoggedIn: boolean, realmStatus: RealmStatus): AccessState {
@@ -227,7 +234,7 @@ export default function App() {
   const isOwner = useIsOwner(cloudEnabled ? cloudUser?.email : undefined)
   const loggedInIdentity = useLoggedInIdentity(cloudEnabled ? cloudUser?.email : undefined)
   const currentUser: Owner = cloudEnabled ? (loggedInIdentity ?? 'Moon + Kira') : localUser
-  const { realmId: workspaceRealmId, status: realmStatus } = useWorkspaceRealm(isCloudLoggedIn, isOwner, cloudUser?.userId)
+  const { realmId: workspaceRealmId, status: realmStatus, error: realmError } = useWorkspaceRealm(isCloudLoggedIn, isOwner, cloudUser?.userId)
   const access = useWorkspaceAccess(isCloudLoggedIn, realmStatus)
   const signOut = async () => {
     // No force: Dexie Cloud's own logout warns and asks for confirmation first if this
@@ -254,6 +261,7 @@ export default function App() {
 
   if (access === 'signed-out') return <LoginScreen />
   if (access === 'checking') return <CheckingAccessScreen />
+  if (access === 'denied' && isOwner && realmError) return <WorkspaceSetupErrorScreen error={realmError} />
   if (access === 'denied') return <NotAuthorizedScreen email={cloudUser?.email} />
 
   const navigate = (next: ViewName) => {
@@ -392,6 +400,21 @@ function CheckingAccessScreen() {
         <p className="eyebrow">Impulse workspace</p>
         <h1>Checking your access…</h1>
         <p>Syncing your account with the workspace. This only takes a moment.</p>
+      </div>
+    </main>
+  )
+}
+
+function WorkspaceSetupErrorScreen({ error }: { error: string }) {
+  return (
+    <main className="login-screen">
+      <div className="login-card">
+        <span className="brand-mark large">⌁</span>
+        <p className="eyebrow">Impulse workspace</p>
+        <h1>Couldn't set up your workspace.</h1>
+        <p>Creating the shared workspace on Dexie Cloud failed. Reloading might resolve a one-off hiccup — if it keeps happening, send this exact message to Moon's assistant:</p>
+        <p className="workspace-error-detail">{error}</p>
+        <button className="primary-button wide" onClick={() => window.location.reload()}><Repeat /> Reload</button>
       </div>
     </main>
   )
@@ -767,9 +790,9 @@ function BackupStatus({ exportedAt, exportedBy }: { exportedAt: string; exported
   </p>
 }
 
-function SyncStatusLine({ phase, status, pending }: { phase?: string; status?: string; pending: number }) {
+function SyncStatusLine({ phase, status, pending, error }: { phase?: string; status?: string; pending: number; error?: string }) {
   if (status === 'offline' || phase === 'offline') return <p className="sync-status sync-warn">Offline — changes save on this device and will sync once you're back online.</p>
-  if (status === 'error' || phase === 'error') return <p className="sync-status sync-error">Sync error — your latest changes may not have reached the server. Try reloading the page.</p>
+  if (status === 'error' || phase === 'error') return <p className="sync-status sync-error">Sync error — your latest changes may not have reached the server.{error ? ` Details: ${error}` : ' Try reloading the page.'}</p>
   if (pending > 0) return <p className="sync-status sync-pending">{pending} change{pending === 1 ? '' : 's'} waiting to sync…</p>
   if (phase === 'in-sync') return <p className="sync-status sync-ok">All changes synced.</p>
   return <p className="sync-status">Checking sync status…</p>

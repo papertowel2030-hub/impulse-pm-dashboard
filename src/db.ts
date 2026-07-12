@@ -105,7 +105,7 @@ export function recordRealmId(): string {
  * call this, and only when no shared realm exists yet.
  */
 export async function createWorkspaceRealm(): Promise<string> {
-  return (await (db as any).realms.add({ name: WORKSPACE_REALM_NAME, represents: 'Impulse shared workspace' })) as string
+  return (await (db as any).realms.add({ name: WORKSPACE_REALM_NAME })) as string
 }
 
 /**
