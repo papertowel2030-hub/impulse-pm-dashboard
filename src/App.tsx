@@ -90,6 +90,45 @@ function useLoggedInIdentity(email?: string): Owner | undefined {
   return identity
 }
 
+const activityTables = ['tasks', 'notes', 'milestones', 'meetingItems', 'leads', 'payments', 'resources'] as const
+
+/**
+ * Shows each invited partner's real status: whether they've accepted the invite (Dexie
+ * Cloud tracks this on the realm member record), and when they last saved something —
+ * the closest honest signal available, since Dexie Cloud doesn't expose live presence
+ * for other devices, only for the current one.
+ */
+function PartnerStatus({ ownEmail }: { ownEmail?: string }) {
+  const members = useLiveQuery(
+    () => cloudEnabled ? (db as any).members.where('realmId').equals(WORKSPACE_REALM_ID).toArray() : Promise.resolve([]),
+    [], []
+  ) as any[] | undefined
+  const partners = (members ?? []).filter((m) => m.email && m.email.toLowerCase() !== ownEmail?.trim().toLowerCase())
+  if (!partners.length) return null
+  return <div className="partner-status-list">{partners.map((member) => <PartnerStatusRow key={member.id ?? member.email} member={member} />)}</div>
+}
+
+function PartnerStatusRow({ member }: { member: any }) {
+  const [name, setName] = useState<Owner | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    if (!member.email) return
+    sha256Hex(member.email.trim().toLowerCase()).then((hash) => { if (!cancelled) setName(memberNameByHash[hash]) })
+    return () => { cancelled = true }
+  }, [member.email])
+
+  const lastActive = useLiveQuery(async () => {
+    if (!name) return undefined
+    const rows = (await Promise.all(activityTables.map((table) => (db as any)[table].filter((r: any) => r.createdBy === name).toArray()))).flat()
+    if (!rows.length) return undefined
+    return rows.reduce((latest: string, r: any) => (r.updatedAt > latest ? r.updatedAt : latest), rows[0].updatedAt)
+  }, [name], undefined)
+
+  const acceptedAt = member.accepted ? new Date(member.accepted) : undefined
+  const status = acceptedAt ? `Accepted ${fullDate(acceptedAt.toISOString())}` : member.rejected ? 'Invite declined' : 'Invite pending — hasn’t signed in yet'
+  return <p className="partner-status-row"><strong>{name ?? member.email}</strong> · {status}{lastActive ? ` · last saved something ${fullDate(lastActive)}` : acceptedAt ? ' · no activity yet' : ''}</p>
+}
+
 type AccessState = 'authorized' | 'signed-out' | 'checking' | 'denied'
 
 function useWorkspaceAccess(isCloudLoggedIn: boolean, isOwner: boolean): AccessState {
@@ -715,7 +754,7 @@ function SettingsView({ currentUser, isOwner, email, onSignOut, setToast }: { cu
   return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="The technical details stay here, away from daily work." />
     {cloudEnabled && <section className="settings-section"><div><LogOut /><span><h2>Account</h2><p>Signed in as {email ?? currentUser}{isOwner ? ' · workspace owner' : ''}. Log out on any shared or borrowed device.</p></span></div><button className="secondary-button" onClick={signOut} disabled={signingOut}><LogOut /> {signingOut ? 'Signing out…' : 'Log out'}</button></section>}
     <section className="settings-section"><div><Upload /><span><h2>Command Center import</h2><p>Use the prepared private JSON file once. Existing records with the same IDs are updated, not duplicated.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Import private file</button>{cloudEnabled && <details className="reset-details"><summary>Import keeps failing?</summary><p>If a sync error keeps returning on every refresh, reset this device to clear local data stuck from an older version, then import again.</p><button className="danger-link" onClick={resetDevice} disabled={busy}><Trash2 /> Reset this device</button></details>}</section>
-    <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
+    <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <><div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div><PartnerStatus ownEmail={email} /></> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
     <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : <p className="last-backup backup-stale">No backup exported yet.</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
     <section className="settings-section"><div><ExternalLink /><span><h2>Impulse website</h2><p>The public website remains separate from this private workspace.</p></span></div><a className="secondary-button" href="https://papertowel2030-hub.github.io/Impulse/" target="_blank" rel="noreferrer">Open website <ExternalLink /></a></section>
   </div>

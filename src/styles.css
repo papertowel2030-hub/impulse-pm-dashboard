@@ -338,6 +338,9 @@ h3 { font-size: .95rem; }
 .settings-section summary { cursor: pointer; color: var(--ink); }
 .reset-details p { margin: 8px 0 2px; }
 .reset-details .danger-link { display: inline-flex; align-items: center; gap: 6px; }
+.partner-status-list { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.partner-status-row { font-size: .83rem; color: var(--muted); }
+.partner-status-row strong { color: var(--ink); }
 .settings-section code { font-family: var(--mono); font-size: .78em; background: var(--surface-2); border: 1px solid var(--soft-line); border-radius: 5px; padding: 2px 6px; }
 
 /* ---------- Login ---------- */
