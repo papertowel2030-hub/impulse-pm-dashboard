@@ -336,6 +336,8 @@ h3 { font-size: .95rem; }
 .last-backup.backup-stale { color: var(--warning); }
 .settings-section details { margin-top: 18px; color: var(--muted); font-size: .83rem; }
 .settings-section summary { cursor: pointer; color: var(--ink); }
+.reset-details p { margin: 8px 0 2px; }
+.reset-details .danger-link { display: inline-flex; align-items: center; gap: 6px; }
 .settings-section code { font-family: var(--mono); font-size: .78em; background: var(--surface-2); border: 1px solid var(--soft-line); border-radius: 5px; padding: 2px 6px; }
 
 /* ---------- Login ---------- */

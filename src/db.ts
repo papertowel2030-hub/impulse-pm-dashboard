@@ -133,7 +133,7 @@ export async function convertDeliverablesToPlan() {
       } else {
         const position = planSteps.reduce((max, step) => Math.max(max, step.position), 0) + 1
         await db.milestones.put({
-          id: `milestone-from-${item.id}`,
+          id: newId('milestones', 'milestone'),
           realmId: item.realmId ?? WORKSPACE_REALM_ID,
           projectId: item.projectId,
           title: item.title,
@@ -171,7 +171,7 @@ export async function convertPaidToPayments() {
       if (existing > 0) continue
       const stamp = nowIso()
       await db.payments.put({
-        id: `payment-from-${lead.id}`,
+        id: newId('payments', 'payment'),
         realmId: lead.realmId ?? WORKSPACE_REALM_ID,
         leadId: lead.id,
         kind: 'one_off',
@@ -207,6 +207,16 @@ export async function deleteProjectPermanently(projectId: string) {
       await db.projects.delete(projectId)
     }
   )
+}
+
+/**
+ * Deletes this browser's entire local copy of the database, including Dexie Cloud's
+ * pending-sync outbox and stored login. Use to recover when records saved by an older
+ * build carry invalid (unprefixed) IDs and jam the sync queue on every refresh. Records
+ * that already reached the cloud sync back down on the next load; the stuck ones do not.
+ */
+export async function resetLocalData() {
+  await db.delete()
 }
 
 export async function clearLocalData() {
