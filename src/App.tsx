@@ -14,7 +14,7 @@ import type {
 import {
   activeMeetingStatus, addMonthsIso, daysSince, daysUntil, formatDate, formatMoney, fullDate, generateRecurring,
   isOverdue, isSafeUrl, leadStageGroups, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
-  nowIso, paymentTimingLabels, PUBLIC_REALM_ID, sumDue, sumReceived, taskStatusLabels
+  nowIso, paymentTimingLabels, resolveWorkspaceRealmId, sumDue, sumReceived, taskStatusLabels
 } from './utils'
 
 const paymentTimings = Object.keys(paymentTimingLabels) as PaymentTiming[]
@@ -167,17 +167,10 @@ function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: 
     () => cloudEnabled && isCloudLoggedIn ? (db as any).realms.toArray() : Promise.resolve([]),
     [isCloudLoggedIn], undefined
   ) as any[] | undefined
-  // Sorted so the same device consistently resolves to the same realm across reloads. A past
-  // bug (fixed below) briefly let multiple duplicate shared realms get created server-side —
-  // this keeps behavior stable on one device even if stray duplicates still exist.
-  // Must also exclude Dexie Cloud's built-in PUBLIC_REALM_ID: it's present in every database's
-  // `realms` table, and because '-' sorts below every character the addon's id generator uses,
-  // an unfiltered sort picks it as [0] before any real workspace realm — the actual cause of
-  // every write into "the workspace" 403ing, regardless of how the realm itself was created.
-  const shared = (realms ?? [])
-    .filter((realm) => realm.realmId && realm.realmId !== userId && realm.realmId !== PUBLIC_REALM_ID)
-    .sort((a, b) => (a.realmId < b.realmId ? -1 : 1))[0]
-  const realmId: string | undefined = shared?.realmId
+  // See resolveWorkspaceRealmId (utils.ts) for why PUBLIC_REALM_ID must be excluded here —
+  // that exclusion has its own unit tests since it can't be exercised without a live Dexie
+  // Cloud connection otherwise.
+  const realmId = resolveWorkspaceRealmId(realms, userId)
   const creatingRef = useRef(false)
   const restampedRef = useRef(false)
   const [createError, setCreateError] = useState<string | undefined>(undefined)
@@ -208,10 +201,7 @@ function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: 
     ;(async () => {
       try { await (db as any).cloud.sync({ purpose: 'pull', wait: true }) } catch { /* offline: fall back to local state below */ }
       const freshRealms: any[] = await (db as any).realms.toArray()
-      // PUBLIC_REALM_ID must be excluded here too — it's in every database's realms table
-      // regardless of whether the real workspace realm exists, so without this the owner
-      // bootstrap always concludes "a shared realm already exists" and skips creation entirely.
-      if (freshRealms.some((realm) => realm.realmId && realm.realmId !== userId && realm.realmId !== PUBLIC_REALM_ID)) { creatingRef.current = false; return }
+      if (resolveWorkspaceRealmId(freshRealms, userId)) { creatingRef.current = false; return }
       try { await createWorkspaceRealm() }
       catch (error) {
         creatingRef.current = false

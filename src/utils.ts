@@ -16,6 +16,27 @@ export const WORKSPACE_REALM_NAME = 'Impulse workspace'
 // `.sort()[0]` over `realms` picks this one before the real workspace realm every time.
 export const PUBLIC_REALM_ID = 'rlm-public'
 
+/**
+ * Picks "the" shared workspace realm out of everything `db.realms` currently holds — pulled
+ * out of useWorkspaceRealm (App.tsx) as a pure function specifically so this selection can be
+ * unit-tested without a live Dexie Cloud connection. Excludes the user's own private realm
+ * (realmId === userId) and Dexie Cloud's built-in PUBLIC_REALM_ID, which is present in every
+ * database regardless of whether the app has created its real workspace realm yet. Sorted so
+ * the same device consistently resolves to the same realm across reloads if stray duplicates
+ * exist.
+ */
+export function resolveWorkspaceRealmId(
+  realms: Array<{ realmId?: string }> | undefined,
+  userId: string | undefined
+): string | undefined {
+  const candidates = (realms ?? [])
+    .filter((realm): realm is { realmId: string } =>
+      Boolean(realm.realmId) && realm.realmId !== userId && realm.realmId !== PUBLIC_REALM_ID
+    )
+    .sort((a, b) => (a.realmId < b.realmId ? -1 : 1))
+  return candidates[0]?.realmId
+}
+
 export const nowIso = () => new Date().toISOString()
 
 export function makeId(prefix: string) {
