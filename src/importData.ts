@@ -29,9 +29,12 @@ function prefixedId(tableName: keyof typeof db, id: string | undefined) {
   return `${prefix}${id}`
 }
 
-export async function importWorkspaceFile(file: File) {
+export async function importWorkspaceFile(file: File, realmId?: string) {
   const data = JSON.parse(await file.text()) as ImportPackage
   if (data.version !== 1 || !Array.isArray(data.seedProjects)) throw new Error('This is not a valid Impulse import file.')
+  // Import files carry the old orphan realm id. In cloud mode every record must be re-stamped
+  // with the real shared realm the user belongs to, or the whole import would fail to sync.
+  if (cloudEnabled && !realmId) throw new Error('Workspace is still connecting. Try again in a moment, then import.')
 
   const rows = {
     projects: data.seedProjects.map((p) => ({ ...p, id: prefixedId('projects', p.id)! })),
@@ -44,6 +47,12 @@ export async function importWorkspaceFile(file: File) {
     meetingItems: (data.seedMeetingItems ?? []).map((mi) => ({ ...mi, id: prefixedId('meetingItems', mi.id)!, projectId: prefixedId('projects', mi.projectId)!, meetingId: prefixedId('meetings', mi.meetingId) })),
     notes: (data.notes ?? []).map((n) => ({ ...n, id: prefixedId('notes', n.id)!, projectId: prefixedId('projects', n.projectId)! })),
     meetings: (data.meetings ?? []).map((m) => ({ ...m, id: prefixedId('meetings', m.id)! }))
+  }
+
+  // Re-stamp every imported record into the real shared realm so it belongs to a realm the
+  // user actually owns/joined and therefore syncs. (Offline mode keeps the file's own tag.)
+  if (cloudEnabled && realmId) {
+    for (const group of Object.values(rows)) for (const row of group) (row as { realmId: string }).realmId = realmId
   }
 
   await db.transaction('rw', [db.projects, db.milestones, db.deliverables, db.tasks, db.leads, db.payments, db.resources, db.meetingItems, db.notes, db.meetings], async () => {

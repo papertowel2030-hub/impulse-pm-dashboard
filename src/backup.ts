@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx'
-import { db } from './db'
+import { db, newId, recordRealmId } from './db'
 import type { Owner } from './types'
-import { makeId, nowIso, WORKSPACE_REALM_ID } from './utils'
+import { nowIso } from './utils'
 
 const sheet = <T extends object>(rows: T[]) => XLSX.utils.json_to_sheet(rows)
 
@@ -36,8 +36,8 @@ export async function exportExcelBackup(exportedBy: Owner) {
     .reduce((sum, rows) => sum + rows.length, 0)
 
   await db.backupExports.add({
-    id: makeId('backup'),
-    realmId: WORKSPACE_REALM_ID,
+    id: newId('backupExports', 'backup'),
+    realmId: recordRealmId(),
     exportedAt: nowIso(),
     exportedBy,
     filename,

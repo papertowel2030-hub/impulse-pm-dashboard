@@ -1,4 +1,4 @@
-import Dexie, { type EntityTable } from 'dexie'
+import Dexie, { type EntityTable, type Table } from 'dexie'
 import dexieCloud from 'dexie-cloud-addon'
 import type {
   BackupExport,
@@ -23,7 +23,7 @@ import {
   demoResources,
   demoTasks
 } from './seed'
-import { nowIso, similarTitles, WORKSPACE_REALM_ID } from './utils'
+import { LEGACY_REALM_ID, nowIso, similarTitles, WORKSPACE_REALM_NAME } from './utils'
 
 export const cloudUrl = (import.meta.env.VITE_DEXIE_CLOUD_URL as string | undefined)?.trim()
 export const cloudEnabled = Boolean(cloudUrl)
@@ -80,6 +80,49 @@ export function newId(tableName: keyof typeof db, fallbackPrefix: string) {
   return `${fallbackPrefix}-${crypto.randomUUID()}`
 }
 
+// The id of the real shared realm this device writes into, resolved once the user is logged
+// in and the realm is known (see useWorkspaceRealm). New records are stamped with it so they
+// belong to a realm the user actually owns/joined and therefore sync. Undefined until resolved
+// (offline-only mode leaves it undefined, which routes records to the private realm).
+let activeRealmId: string | undefined
+export function getActiveRealmId() { return activeRealmId }
+export function setActiveRealmId(realmId?: string) { activeRealmId = realmId }
+
+// The realm id to stamp on a new record. When cloud sync is off there are no realms, so we
+// return the legacy tag purely as a local grouping label (it never leaves the device anyway).
+// In cloud mode the workspace realm must already be resolved — callers are gated behind that,
+// so a missing id is a real invariant violation and we fail loud instead of silently writing
+// an orphaned record that would never sync.
+export function recordRealmId(): string {
+  if (!cloudEnabled) return LEGACY_REALM_ID
+  if (!activeRealmId) throw new Error('Workspace is still connecting. Try again in a moment.')
+  return activeRealmId
+}
+
+/**
+ * Creates the real shared workspace realm. Dexie Cloud assigns a valid "rlm…" id and makes
+ * the creator its owner (owner is stamped at write time). Only the workspace owner should
+ * call this, and only when no shared realm exists yet.
+ */
+export async function createWorkspaceRealm(): Promise<string> {
+  return (await (db as any).realms.add({ name: WORKSPACE_REALM_NAME, represents: 'Impulse shared workspace' })) as string
+}
+
+/**
+ * Moves any local records still tagged with the old orphan realm id into the real shared
+ * realm so they finally sync. Best-effort and idempotent — once nothing carries the legacy
+ * id, this is a no-op.
+ */
+export async function restampLegacyRealm(newRealmId: string) {
+  const tables = [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetings, db.meetingItems, db.leads, db.payments, db.resources] as unknown as Table<any>[]
+  const stamp = nowIso()
+  await db.transaction('rw', tables, async () => {
+    for (const table of tables) {
+      await table.where('realmId').equals(LEGACY_REALM_ID).modify({ realmId: newRealmId, updatedAt: stamp })
+    }
+  })
+}
+
 export async function seedIfEmpty() {
   const count = await db.projects.count()
   if (count > 0 || !import.meta.env.DEV) return
@@ -134,7 +177,7 @@ export async function convertDeliverablesToPlan() {
         const position = planSteps.reduce((max, step) => Math.max(max, step.position), 0) + 1
         await db.milestones.put({
           id: newId('milestones', 'milestone'),
-          realmId: item.realmId ?? WORKSPACE_REALM_ID,
+          realmId: item.realmId ?? recordRealmId(),
           projectId: item.projectId,
           title: item.title,
           status: deliverableStatusToMilestone[item.status] ?? 'not_started',
@@ -172,7 +215,7 @@ export async function convertPaidToPayments() {
       const stamp = nowIso()
       await db.payments.put({
         id: newId('payments', 'payment'),
-        realmId: lead.realmId ?? WORKSPACE_REALM_ID,
+        realmId: lead.realmId ?? recordRealmId(),
         leadId: lead.id,
         kind: 'one_off',
         label: 'Paid',

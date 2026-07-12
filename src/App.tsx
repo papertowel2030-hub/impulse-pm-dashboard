@@ -5,7 +5,7 @@ import {
   FileCheck2, FolderKanban, Home, Lightbulb, Link2, LogIn, LogOut, Menu, MessageSquareText, NotebookPen,
   Pencil, Plus, Repeat, Settings, Star, Target, Trash2, Upload, UserPlus, Users, Wallet, X
 } from 'lucide-react'
-import { db, cloudEnabled, newId, seedIfEmpty, convertDeliverablesToPlan, convertPaidToPayments, deleteProjectPermanently, resetLocalData } from './db'
+import { db, cloudEnabled, newId, recordRealmId, getActiveRealmId, setActiveRealmId, createWorkspaceRealm, restampLegacyRealm, seedIfEmpty, convertDeliverablesToPlan, convertPaidToPayments, deleteProjectPermanently, resetLocalData } from './db'
 import { importWorkspaceFile } from './importData'
 import type {
   Lead, LeadStage, MeetingItem, MeetingItemStatus, Milestone, MilestoneStatus, ModalKind, Note,
@@ -14,7 +14,7 @@ import type {
 import {
   activeMeetingStatus, addMonthsIso, daysSince, daysUntil, formatDate, formatMoney, fullDate, generateRecurring,
   isOverdue, isSafeUrl, leadStageGroups, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
-  nowIso, paymentTimingLabels, sumDue, sumReceived, taskStatusLabels, WORKSPACE_REALM_ID
+  nowIso, paymentTimingLabels, sumDue, sumReceived, taskStatusLabels
 } from './utils'
 
 const paymentTimings = Object.keys(paymentTimingLabels) as PaymentTiming[]
@@ -98,10 +98,10 @@ const activityTables = ['tasks', 'notes', 'milestones', 'meetingItems', 'leads',
  * the closest honest signal available, since Dexie Cloud doesn't expose live presence
  * for other devices, only for the current one.
  */
-function PartnerStatus({ ownEmail }: { ownEmail?: string }) {
+function PartnerStatus({ ownEmail, realmId }: { ownEmail?: string; realmId?: string }) {
   const members = useLiveQuery(
-    () => cloudEnabled ? (db as any).members.where('realmId').equals(WORKSPACE_REALM_ID).toArray() : Promise.resolve([]),
-    [], []
+    () => cloudEnabled && realmId ? (db as any).members.where('realmId').equals(realmId).toArray() : Promise.resolve([]),
+    [realmId], []
   ) as any[] | undefined
   const partners = (members ?? []).filter((m) => m.email && m.email.toLowerCase() !== ownEmail?.trim().toLowerCase())
   if (!partners.length) return null
@@ -130,35 +130,62 @@ function PartnerStatusRow({ member }: { member: any }) {
 }
 
 type AccessState = 'authorized' | 'signed-out' | 'checking' | 'denied'
+type RealmStatus = 'loading' | 'ready' | 'none'
 
-function useWorkspaceAccess(isCloudLoggedIn: boolean, isOwner: boolean): AccessState {
-  // Any workspace-realm record counts as membership proof, not just projects — an
-  // empty-but-real workspace (no projects yet, only leads/notes) would otherwise
-  // wrongly deny an invited partner.
-  const workspaceRecordCount = useLiveQuery(
-    () => cloudEnabled && isCloudLoggedIn
-      ? Promise.all([
-          db.projects.where('realmId').equals(WORKSPACE_REALM_ID).count(),
-          db.leads.where('realmId').equals(WORKSPACE_REALM_ID).count(),
-          db.notes.where('realmId').equals(WORKSPACE_REALM_ID).count(),
-          db.tasks.where('realmId').equals(WORKSPACE_REALM_ID).count()
-        ]).then(([projects, leads, notes, tasks]) => projects + leads + notes + tasks)
-      : Promise.resolve(0),
-    [isCloudLoggedIn], 0
-  )
-  const hasWorkspaceAccess = (workspaceRecordCount ?? 0) > 0
+/**
+ * Resolves the one real shared realm Moon + Kira collaborate in. The workspace realm is the
+ * single realm the user belongs to that isn't their own private realm. If the owner has none
+ * yet, it's created once. The resolved id is pushed to db.ts so new records get stamped with
+ * it, and any records still carrying the old orphan realm id are migrated across.
+ */
+function useWorkspaceRealm(isCloudLoggedIn: boolean, isOwner: boolean, userId?: string): { realmId?: string; status: RealmStatus } {
+  const realms = useLiveQuery(
+    () => cloudEnabled && isCloudLoggedIn ? (db as any).realms.toArray() : Promise.resolve([]),
+    [isCloudLoggedIn], undefined
+  ) as any[] | undefined
+  const shared = (realms ?? []).find((realm) => realm.realmId && realm.realmId !== userId)
+  const realmId: string | undefined = shared?.realmId
+  const creatingRef = useRef(false)
+
+  // Publish the resolved id to the record stamper and migrate any orphaned local records in.
+  useEffect(() => {
+    setActiveRealmId(cloudEnabled ? realmId : undefined)
+    if (realmId) restampLegacyRealm(realmId).catch(() => {})
+  }, [realmId])
+
+  // Owner bootstrap: create the shared realm exactly once when logged in and none exists yet.
+  useEffect(() => {
+    if (!cloudEnabled || !isCloudLoggedIn || realms === undefined) return
+    if (realmId || !isOwner || creatingRef.current) return
+    creatingRef.current = true
+    createWorkspaceRealm().catch(() => { creatingRef.current = false })
+  }, [isCloudLoggedIn, realms, realmId, isOwner])
+
+  const status: RealmStatus =
+    !cloudEnabled ? 'ready'
+    : !isCloudLoggedIn || realms === undefined ? 'loading'
+    : realmId ? 'ready'
+    : isOwner || creatingRef.current ? 'loading'
+    : 'none'
+  return { realmId, status }
+}
+
+function useWorkspaceAccess(isCloudLoggedIn: boolean, realmStatus: RealmStatus): AccessState {
+  // Access now follows real realm membership: you're in once you belong to (or, as owner,
+  // have created) the shared workspace realm — no record-counting guesswork.
   const [pastGracePeriod, setPastGracePeriod] = useState(false)
 
   useEffect(() => {
     setPastGracePeriod(false)
-    if (!cloudEnabled || !isCloudLoggedIn || isOwner || hasWorkspaceAccess) return
+    if (!cloudEnabled || !isCloudLoggedIn || realmStatus !== 'none') return
     const timer = window.setTimeout(() => setPastGracePeriod(true), 8000)
     return () => window.clearTimeout(timer)
-  }, [isCloudLoggedIn, isOwner, hasWorkspaceAccess])
+  }, [isCloudLoggedIn, realmStatus])
 
   if (!cloudEnabled) return 'authorized'
   if (!isCloudLoggedIn) return 'signed-out'
-  if (isOwner || hasWorkspaceAccess) return 'authorized'
+  if (realmStatus === 'ready') return 'authorized'
+  if (realmStatus === 'loading') return 'checking'
   return pastGracePeriod ? 'denied' : 'checking'
 }
 
@@ -179,7 +206,8 @@ export default function App() {
   const isOwner = useIsOwner(cloudEnabled ? cloudUser?.email : undefined)
   const loggedInIdentity = useLoggedInIdentity(cloudEnabled ? cloudUser?.email : undefined)
   const currentUser: Owner = cloudEnabled ? (loggedInIdentity ?? 'Moon + Kira') : localUser
-  const access = useWorkspaceAccess(isCloudLoggedIn, isOwner)
+  const { realmId: workspaceRealmId, status: realmStatus } = useWorkspaceRealm(isCloudLoggedIn, isOwner, cloudUser?.userId)
+  const access = useWorkspaceAccess(isCloudLoggedIn, realmStatus)
   const signOut = async () => {
     // No force: Dexie Cloud's own logout warns and asks for confirmation first if this
     // device has edits that haven't synced yet, instead of silently discarding them.
@@ -301,7 +329,7 @@ export default function App() {
           )}
           {view === 'sales' && <ClientsView openModal={(recordId) => setModal({ kind: 'lead', recordId })} addLead={() => setModal({ kind: 'lead' })} />}
           {view === 'meeting' && <MeetingView currentUser={currentUser} setToast={setToast} openProject={openProject} openEdit={openQuickAdd} />}
-          {view === 'settings' && <SettingsView currentUser={currentUser} isOwner={isOwner} email={cloudUser?.email} onSignOut={signOut} setToast={setToast} />}
+          {view === 'settings' && <SettingsView currentUser={currentUser} isOwner={isOwner} email={cloudUser?.email} realmId={workspaceRealmId} onSignOut={signOut} setToast={setToast} />}
         </main>
       </div>
 
@@ -655,10 +683,10 @@ function MeetingView({ currentUser, setToast, openProject, openEdit }: { current
     const liveNotes = noteFor(item)
     await db.meetingItems.update(item.id, { status, notes: liveNotes || undefined, updatedAt: nowIso() })
     if (status === 'action') {
-      await db.tasks.add({ id: newId('tasks', 'task'), realmId: WORKSPACE_REALM_ID, projectId: item.projectId, title: item.title, owner: item.owner || currentUser, status: 'next', priority: 'normal', dueDate: item.dueDate, position: Date.now(), createdAt: nowIso(), updatedAt: nowIso(), notes: liveNotes ? `From the partner meeting: ${liveNotes}` : 'From the partner meeting.' })
+      await db.tasks.add({ id: newId('tasks', 'task'), realmId: recordRealmId(), projectId: item.projectId, title: item.title, owner: item.owner || currentUser, status: 'next', priority: 'normal', dueDate: item.dueDate, position: Date.now(), createdAt: nowIso(), updatedAt: nowIso(), notes: liveNotes ? `From the partner meeting: ${liveNotes}` : 'From the partner meeting.' })
       setToast({ message: 'Added to the project board for this week.' })
     } else if (status === 'decision') {
-      await db.notes.add({ id: newId('notes', 'note'), realmId: WORKSPACE_REALM_ID, projectId: item.projectId, title: item.title, body: liveNotes || 'Agreed in the partner meeting.', kind: 'decision', author: currentUser, createdAt: nowIso(), updatedAt: nowIso(), createdBy: currentUser })
+      await db.notes.add({ id: newId('notes', 'note'), realmId: recordRealmId(), projectId: item.projectId, title: item.title, body: liveNotes || 'Agreed in the partner meeting.', kind: 'decision', author: currentUser, createdAt: nowIso(), updatedAt: nowIso(), createdBy: currentUser })
       setToast({ message: 'Decision saved to the project notes.' })
     } else {
       setToast({ message: status === 'deferred' ? 'Topic will roll into the next meeting.' : 'Topic closed.' })
@@ -669,10 +697,10 @@ function MeetingView({ currentUser, setToast, openProject, openEdit }: { current
   const promoteIdea = async (idea: Note, to: 'agenda' | 'task') => {
     const stamp = nowIso()
     if (to === 'agenda') {
-      await db.meetingItems.add({ id: newId('meetingItems', 'agenda'), realmId: WORKSPACE_REALM_ID, projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'open', owner: idea.author, createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
+      await db.meetingItems.add({ id: newId('meetingItems', 'agenda'), realmId: recordRealmId(), projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'open', owner: idea.author, createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
       setToast({ message: 'Idea moved to the meeting agenda.' })
     } else {
-      await db.tasks.add({ id: newId('tasks', 'task'), realmId: WORKSPACE_REALM_ID, projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'next', priority: 'normal', owner: idea.author, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
+      await db.tasks.add({ id: newId('tasks', 'task'), realmId: recordRealmId(), projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'next', priority: 'normal', owner: idea.author, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
       setToast({ message: 'Idea turned into a task for this week.' })
     }
     await db.notes.update(idea.id, { archivedAt: stamp, updatedAt: stamp })
@@ -718,7 +746,7 @@ function BackupStatus({ exportedAt, exportedBy }: { exportedAt: string; exported
   </p>
 }
 
-function SettingsView({ currentUser, isOwner, email, onSignOut, setToast }: { currentUser: Owner; isOwner: boolean; email?: string; onSignOut: () => Promise<void>; setToast: (toast: ToastState) => void }) {
+function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToast }: { currentUser: Owner; isOwner: boolean; email?: string; realmId?: string; onSignOut: () => Promise<void>; setToast: (toast: ToastState) => void }) {
   const backups = useLiveQuery(() => db.backupExports.orderBy('exportedAt').reverse().toArray(), [], [])
   const [inviteEmail, setInviteEmail] = useState('')
   const [busy, setBusy] = useState(false)
@@ -727,10 +755,11 @@ function SettingsView({ currentUser, isOwner, email, onSignOut, setToast }: { cu
   const invite = async () => {
     if (!cloudEnabled) return setToast({ message: 'Connect Dexie Cloud before sending an invitation.' })
     if (!isOwner) return setToast({ message: 'Only the workspace owner can invite partners.' })
+    if (!realmId) return setToast({ message: 'Still connecting to the workspace. Try again in a moment.' })
     if (!inviteEmail.trim()) return
     try {
       const members = (db as any).members
-      await members.add({ realmId: WORKSPACE_REALM_ID, email: inviteEmail.trim().toLowerCase(), invite: true, permissions: { add: '*', update: '*', delete: '*' } })
+      await members.add({ realmId, email: inviteEmail.trim().toLowerCase(), invite: true, permissions: { add: '*', update: '*', delete: '*' } })
       setInviteEmail(''); setToast({ message: 'Invitation sent.' })
     } catch (error) { setToast({ message: error instanceof Error ? error.message : 'Could not send invitation.' }) }
   }
@@ -744,7 +773,7 @@ function SettingsView({ currentUser, isOwner, email, onSignOut, setToast }: { cu
     if (!file) return
     setBusy(true)
     try {
-      const count = await importWorkspaceFile(file)
+      const count = await importWorkspaceFile(file, realmId)
       setToast({ message: `Command Center imported: ${count} records.` })
     } catch (error) { setToast({ message: error instanceof Error ? error.message : 'Import failed.' }) }
     finally { setBusy(false); if (importInput.current) importInput.current.value = '' }
@@ -765,7 +794,7 @@ function SettingsView({ currentUser, isOwner, email, onSignOut, setToast }: { cu
   return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="The technical details stay here, away from daily work." />
     {cloudEnabled && <section className="settings-section"><div><LogOut /><span><h2>Account</h2><p>Signed in as {email ?? currentUser}{isOwner ? ' · workspace owner' : ''}. Log out on any shared or borrowed device.</p></span></div><button className="secondary-button" onClick={signOut} disabled={signingOut}><LogOut /> {signingOut ? 'Signing out…' : 'Log out'}</button></section>}
     <section className="settings-section"><div><Upload /><span><h2>Command Center import</h2><p>Use the prepared private JSON file once. Existing records with the same IDs are updated, not duplicated.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Import private file</button>{cloudEnabled && <details className="reset-details"><summary>Import keeps failing?</summary><p>If a sync error keeps returning on every refresh, reset this device to clear local data stuck from an older version, then import again.</p><button className="danger-link" onClick={resetDevice} disabled={busy}><Trash2 /> Reset this device</button></details>}</section>
-    <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <><div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div><PartnerStatus ownEmail={email} /></> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
+    <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <><div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div><PartnerStatus ownEmail={email} realmId={realmId} /></> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
     <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : <p className="last-backup backup-stale">No backup exported yet.</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
     <section className="settings-section"><div><ExternalLink /><span><h2>Impulse website</h2><p>The public website remains separate from this private workspace.</p></span></div><a className="secondary-button" href="https://papertowel2030-hub.github.io/Impulse/" target="_blank" rel="noreferrer">Open website <ExternalLink /></a></section>
   </div>
@@ -857,9 +886,10 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); if (!title.trim()) return setError('Add a short title.')
     if (url.trim() && (kind === 'task' || kind === 'milestone' || kind === 'deliverable' || kind === 'lead') && !isSafeUrl(url.trim())) return setError('Only http:// or https:// links are allowed.')
+    if (cloudEnabled && !isEdit && !getActiveRealmId()) return setError('Still connecting to the workspace. Try again in a moment.')
     setSaving(true); setError('')
     const stamp = nowIso()
-    const add = { realmId: WORKSPACE_REALM_ID, createdAt: stamp, createdBy: currentUser }
+    const add = { realmId: recordRealmId(), createdAt: stamp, createdBy: currentUser }
     try {
       if (kind === 'task') {
         const data = { projectId, title: title.trim(), owner, dueDate: dueDate || undefined, status: (status || 'next') as TaskStatus, priority, notes: notes || undefined, driveUrl: url || undefined, updatedAt: stamp }
@@ -1042,14 +1072,14 @@ function PaymentForm({ kind, leadId, startPosition, onDone, setToast }: { kind: 
     const stamp = nowIso()
     if (kind === 'one_off') {
       await db.payments.add({
-        id: newId('payments', 'payment'), realmId: WORKSPACE_REALM_ID, leadId, kind: 'one_off',
+        id: newId('payments', 'payment'), realmId: recordRealmId(), leadId, kind: 'one_off',
         label: label.trim() || 'Payment', amount: amount ? Number(amount) : undefined,
         timing, dueDate: timing === 'date' ? (date || undefined) : undefined,
         status: 'due', position: startPosition, createdAt: stamp, updatedAt: stamp
       })
     } else {
       const rows = generateRecurring({
-        leadId, realmId: WORKSPACE_REALM_ID, kind,
+        leadId, realmId: recordRealmId(), kind,
         label: label.trim() || (kind === 'retainer' ? 'Retainer' : 'Share'),
         amount: kind === 'retainer' && amount ? Number(amount) : undefined,
         percent: kind === 'share' && percent ? Number(percent) : undefined,
@@ -1117,6 +1147,7 @@ function ProjectModal({ state, onClose, setToast, openProject }: { state: Projec
     event.preventDefault()
     if (!name.trim()) return setError('Give the project a name.')
     if (driveFolderUrl.trim() && !isSafeUrl(driveFolderUrl.trim())) return setError('Only http:// or https:// links are allowed.')
+    if (cloudEnabled && !state.projectId && !getActiveRealmId()) return setError('Still connecting to the workspace. Try again in a moment.')
     const stamp = nowIso()
     const data = { name: name.trim(), clientType, phase: phase.trim() || (clientType === 'internal' ? 'Operations' : 'Getting started'), goal: goal.trim(), currentFocus: currentFocus.trim(), targetDate: targetDate || undefined, driveFolderUrl: driveFolderUrl || undefined, color, updatedAt: stamp }
     try {
@@ -1126,7 +1157,7 @@ function ProjectModal({ state, onClose, setToast, openProject }: { state: Projec
       } else {
         const count = await db.projects.count()
         const id = newId('projects', 'project')
-        await db.projects.add({ id, realmId: WORKSPACE_REALM_ID, ...data, serviceType: clientType === 'internal' ? 'studio' : 'website', status: 'active', order: count + 1, createdAt: stamp, createdBy: undefined })
+        await db.projects.add({ id, realmId: recordRealmId(), ...data, serviceType: clientType === 'internal' ? 'studio' : 'website', status: 'active', order: count + 1, createdAt: stamp, createdBy: undefined })
         setToast({ message: 'Project created. Add the first plan step.' })
         openProject(id)
       }

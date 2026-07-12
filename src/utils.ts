@@ -1,6 +1,13 @@
 import type { DeliverableStatus, LeadStage, MeetingItemStatus, MilestoneStatus, Payment, PaymentKind, PaymentTiming, TaskStatus } from './types'
 
-export const WORKSPACE_REALM_ID = 'rlm-impulse-workspace'
+// The old hardcoded realm id. It was never a real Dexie Cloud realm, so records tagged with
+// it never synced. Kept only to find and migrate those orphaned local records into the real
+// shared realm the owner now creates. Never stamp new records with this.
+export const LEGACY_REALM_ID = 'rlm-impulse-workspace'
+
+// Display name of the one shared realm Moon + Kira collaborate in. The owner creates a real
+// Dexie Cloud realm with this name; both partners discover it by name after syncing.
+export const WORKSPACE_REALM_NAME = 'Impulse workspace'
 
 export const nowIso = () => new Date().toISOString()
 

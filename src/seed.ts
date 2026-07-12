@@ -1,8 +1,9 @@
 import type { Lead, MeetingItem, Milestone, Note, Payment, Project, Resource, Task } from './types'
-import { WORKSPACE_REALM_ID } from './utils'
+import { LEGACY_REALM_ID } from './utils'
 
 const stamp = '2026-01-01T00:00:00.000Z'
-const base = { realmId: WORKSPACE_REALM_ID, createdAt: stamp, updatedAt: stamp, createdBy: 'Demo' }
+// DEV-only demo data; the realm tag is just a local grouping label (never syncs in dev seed).
+const base = { realmId: LEGACY_REALM_ID, createdAt: stamp, updatedAt: stamp, createdBy: 'Demo' }
 
 // Development-only relative dates so deadline views have content to show.
 const inDays = (days: number) => {
