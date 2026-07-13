@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activeMeetingStatus, addMonthsIso, daysUntil, formatMoney, generateRecurring, nearestByDate, nextPayment, PUBLIC_REALM_ID, resolveWorkspaceRealmId, similarTitles, sumDue, sumReceived, taskStatusLabels } from './utils'
+import { activeMeetingStatus, addMonthsIso, daysUntil, formatMoney, fullDate, generateRecurring, nearestByDate, nextPayment, PUBLIC_REALM_ID, resolveWorkspaceRealmId, similarTitles, sumDue, sumReceived, taskStatusLabels } from './utils'
 import type { Payment } from './types'
 
 const pay = (over: Partial<Payment>): Payment => ({
@@ -36,6 +36,14 @@ describe('dashboard helpers', () => {
   it('formats roubles for the money view', () => {
     expect(formatMoney(25000)).toBe(`₽${new Intl.NumberFormat('ru-RU').format(25000)}`)
     expect(formatMoney(undefined)).toBe('')
+  })
+
+  it('formats Dexie Cloud invitation timestamps without crashing Settings', () => {
+    const accepted = new Date('2026-07-13T09:42:18.000Z')
+    const expected = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(accepted)
+    expect(fullDate(accepted)).toBe(expected)
+    expect(fullDate(accepted.toISOString())).toBe(expected)
+    expect(fullDate('not-a-date')).toBe('No date')
   })
 
   it('sums only received and only known-amount due payments', () => {

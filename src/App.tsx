@@ -165,7 +165,7 @@ function PartnerStatusRow({ member }: { member: any }) {
   }, [name], undefined)
 
   const acceptedAt = member.accepted ? new Date(member.accepted) : undefined
-  const status = acceptedAt ? `Accepted ${fullDate(acceptedAt.toISOString())}` : member.rejected ? 'Invite declined' : 'Invite pending — hasn’t signed in yet'
+  const status = acceptedAt ? `Accepted ${fullDate(acceptedAt)}` : member.rejected ? 'Invite declined' : 'Invite pending — hasn’t signed in yet'
   return <p className="partner-status-row"><strong>{name ?? member.email}</strong> · {status}{lastActive ? ` · last saved something ${fullDate(lastActive)}` : acceptedAt ? ' · no activity yet' : ''}</p>
 }
 

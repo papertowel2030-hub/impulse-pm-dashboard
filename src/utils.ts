@@ -67,9 +67,16 @@ export function formatDate(date?: string) {
   return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' }).format(new Date(`${date}T00:00:00`))
 }
 
-export function fullDate(date?: string) {
+export function fullDate(date?: string | Date) {
   if (!date) return 'No date'
-  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(`${date}T00:00:00`))
+  // Form-only dates are parsed at local midnight so they don't shift a day in negative
+  // timezones. Cloud metadata (such as a realm member's accepted date) is already a full
+  // timestamp/Date and must not have another time suffix appended to it.
+  const parsed = date instanceof Date
+    ? date
+    : /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00`) : new Date(date)
+  if (Number.isNaN(parsed.getTime())) return 'No date'
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(parsed)
 }
 
 export function titleCase(value: string) {
