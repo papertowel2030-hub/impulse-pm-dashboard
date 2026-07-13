@@ -4,6 +4,17 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
   base: process.env.GITHUB_ACTIONS ? '/impulse-pm-dashboard/' : '/',
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'dexie-react-hooks'],
+          'data-vendor': ['dexie', 'dexie-cloud-addon'],
+          icons: ['lucide-react']
+        }
+      }
+    }
+  },
   plugins: [
     react(),
     VitePWA({

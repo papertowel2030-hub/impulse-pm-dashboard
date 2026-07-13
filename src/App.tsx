@@ -38,6 +38,20 @@ function usePersistedState<T>(key: string, fallback: T) {
   return [value, setValue] as const
 }
 
+function useOnlineStatus() {
+  const [online, setOnline] = useState(() => navigator.onLine)
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine)
+    window.addEventListener('online', update)
+    window.addEventListener('offline', update)
+    return () => {
+      window.removeEventListener('online', update)
+      window.removeEventListener('offline', update)
+    }
+  }, [])
+  return online
+}
+
 function useCloudUser() {
   const [user, setUser] = useState<any>(null)
   useEffect(() => {
@@ -251,6 +265,7 @@ export default function App() {
   const [toast, setToast] = useState<ToastState | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const online = useOnlineStatus()
   const cloudUser = useCloudUser()
   const isCloudLoggedIn = !cloudEnabled || Boolean(cloudUser?.isLoggedIn)
   const isOwner = useIsOwner(cloudEnabled ? cloudUser?.email : undefined)
@@ -334,7 +349,7 @@ export default function App() {
           <button className="mobile-menu" aria-label="Toggle navigation" onClick={() => setMobileNavOpen(!mobileNavOpen)}><Menu /></button>
           <div className="topbar-context">
             <span>{view === 'meeting' ? 'Partner workspace' : 'Impulse Workspace'}</span>
-            {!navigator.onLine && <span className="sync-state"><CloudOff /> Offline</span>}
+            {!online && <span className="sync-state"><CloudOff /> Offline</span>}
           </div>
           <div className="topbar-actions">
             <QuickAdd onSelect={(kind) => openQuickAdd(kind)} />
@@ -385,7 +400,7 @@ export default function App() {
       </div>
 
       {modal.kind && <EntryModal state={modal} currentUser={currentUser} onClose={() => setModal({ kind: null })} setToast={setToast} />}
-      {projectModal && <ProjectModal state={projectModal} onClose={() => setProjectModal(null)} setToast={setToast} openProject={openProject} />}
+      {projectModal && <ProjectModal state={projectModal} currentUser={currentUser} onClose={() => setProjectModal(null)} setToast={setToast} openProject={openProject} />}
       {toast && <Toast toast={toast} close={() => setToast(null)} />}
     </div>
   )
@@ -747,17 +762,22 @@ function MeetingView({ currentUser, setToast, openProject, openEdit }: { current
 
   const resolve = async (item: MeetingItem, status: MeetingItemStatus) => {
     const liveNotes = noteFor(item)
-    await db.meetingItems.update(item.id, { status, notes: liveNotes || undefined, updatedAt: nowIso() })
-    if (status === 'action') {
-      await db.tasks.add({ id: newId('tasks', 'task'), realmId: recordRealmId(), projectId: item.projectId, title: item.title, owner: item.owner || currentUser, status: 'next', priority: 'normal', dueDate: item.dueDate, position: Date.now(), createdAt: nowIso(), updatedAt: nowIso(), notes: liveNotes ? `From the partner meeting: ${liveNotes}` : 'From the partner meeting.' })
-      setToast({ message: 'Added to the project board for this week.' })
-    } else if (status === 'decision') {
-      await db.notes.add({ id: newId('notes', 'note'), realmId: recordRealmId(), projectId: item.projectId, title: item.title, body: liveNotes || 'Agreed in the partner meeting.', kind: 'decision', author: currentUser, createdAt: nowIso(), updatedAt: nowIso(), createdBy: currentUser })
-      setToast({ message: 'Decision saved to the project notes.' })
-    } else {
-      setToast({ message: status === 'deferred' ? 'Topic will roll into the next meeting.' : 'Topic closed.' })
+    const stamp = nowIso()
+    try {
+      const tables = status === 'action' ? [db.meetingItems, db.tasks] : status === 'decision' ? [db.meetingItems, db.notes] : [db.meetingItems]
+      await db.transaction('rw', tables, async () => {
+        await db.meetingItems.update(item.id, { status, notes: liveNotes || undefined, updatedAt: stamp, updatedBy: currentUser })
+        if (status === 'action') {
+          await db.tasks.add({ id: newId('tasks', 'task'), realmId: recordRealmId(), projectId: item.projectId, title: item.title, owner: item.owner || currentUser, status: 'next', priority: 'normal', dueDate: item.dueDate, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: currentUser, notes: liveNotes ? `From the partner meeting: ${liveNotes}` : 'From the partner meeting.' })
+        } else if (status === 'decision') {
+          await db.notes.add({ id: newId('notes', 'note'), realmId: recordRealmId(), projectId: item.projectId, title: item.title, body: liveNotes || 'Agreed in the partner meeting.', kind: 'decision', author: currentUser, createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
+        }
+      })
+      setToast({ message: status === 'action' ? 'Added to the project board for this week.' : status === 'decision' ? 'Decision saved to the project notes.' : status === 'deferred' ? 'Topic will roll into the next meeting.' : 'Topic closed.' })
+      setDrafts((prev) => { const next = { ...prev }; delete next[item.id]; return next })
+    } catch (error) {
+      setToast({ message: error instanceof Error ? error.message : 'Could not resolve this topic.' })
     }
-    setDrafts((prev) => { const next = { ...prev }; delete next[item.id]; return next })
   }
 
   const promoteIdea = async (idea: Note, to: 'agenda' | 'task') => {
@@ -824,6 +844,54 @@ function SyncStatusLine({ phase, status, pending, error, byTable, realmId }: { p
   return <p className="sync-status">Checking sync status…{diag}</p>
 }
 
+function ArchivedProjects({ setToast }: { setToast: (toast: ToastState) => void }) {
+  const projects = useLiveQuery(
+    () => db.projects.filter((project) => Boolean(project.archivedAt) || project.status === 'archived').toArray(),
+    [], []
+  ).sort((a, b) => (b.archivedAt ?? b.updatedAt).localeCompare(a.archivedAt ?? a.updatedAt))
+  const [workingId, setWorkingId] = useState<string | null>(null)
+
+  const restore = async (project: Project) => {
+    setWorkingId(project.id)
+    try {
+      await db.projects.update(project.id, { archivedAt: undefined, status: 'active', updatedAt: nowIso() })
+      setToast({ message: `${project.name} restored.` })
+    } catch (error) {
+      setToast({ message: error instanceof Error ? error.message : 'Could not restore the project.' })
+    } finally {
+      setWorkingId(null)
+    }
+  }
+
+  const remove = async (project: Project) => {
+    if (!window.confirm(`Permanently delete "${project.name}"? This removes its plan, tasks, notes, meeting items and links. This cannot be undone.`)) return
+    setWorkingId(project.id)
+    try {
+      await deleteProjectPermanently(project.id)
+      setToast({ message: `${project.name} permanently deleted.` })
+    } catch (error) {
+      setToast({ message: error instanceof Error ? error.message : 'Could not delete the project.' })
+    } finally {
+      setWorkingId(null)
+    }
+  }
+
+  return <section className="settings-section">
+    <div><Archive /><span><h2>Archived projects</h2><p>Restore past work or permanently remove projects you no longer need.</p></span></div>
+    {projects.length ? <div className="archived-projects">{projects.map((project) => {
+      const working = workingId === project.id
+      return <div className="archived-project-row" key={project.id}>
+        <span className="project-dot" style={{ background: project.color }} />
+        <span><strong>{project.name}</strong><small>Archived {new Date(project.archivedAt ?? project.updatedAt).toLocaleDateString('en-GB')}</small></span>
+        <div className="archived-project-actions">
+          <button className="secondary-button" onClick={() => restore(project)} disabled={working}><Repeat /> Restore</button>
+          <button className="danger-link" onClick={() => remove(project)} disabled={working}><Trash2 /> Delete permanently</button>
+        </div>
+      </div>
+    })}</div> : <p className="last-backup">No archived projects.</p>}
+  </section>
+}
+
 function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToast }: { currentUser: Owner; isOwner: boolean; email?: string; realmId?: string; onSignOut: () => Promise<void>; setToast: (toast: ToastState) => void }) {
   const backups = useLiveQuery(() => db.backupExports.orderBy('exportedAt').reverse().toArray(), [], [])
   const syncStatus = useSyncStatus()
@@ -873,6 +941,7 @@ function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToas
   return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="The technical details stay here, away from daily work." />
     {cloudEnabled && <section className="settings-section"><div><LogOut /><span><h2>Account</h2><p>Signed in as {email ?? currentUser}{isOwner ? ' · workspace owner' : ''}. Log out on any shared or borrowed device.</p><SyncStatusLine {...syncStatus} realmId={realmId} /></span></div><button className="secondary-button" onClick={signOut} disabled={signingOut}><LogOut /> {signingOut ? 'Signing out…' : 'Log out'}</button></section>}
     <section className="settings-section"><div><Upload /><span><h2>Command Center import</h2><p>Use the prepared private JSON file once. Existing records with the same IDs are updated, not duplicated.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Import private file</button>{cloudEnabled && <details className="reset-details"><summary>Import keeps failing?</summary><p>If a sync error keeps returning on every refresh, reset this device to clear local data stuck from an older version, then import again.</p><button className="danger-link" onClick={resetDevice} disabled={busy}><Trash2 /> Reset this device</button></details>}</section>
+    <ArchivedProjects setToast={setToast} />
     <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <><div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div><PartnerStatus ownEmail={email} realmId={realmId} /></> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
     <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : <p className="last-backup backup-stale">No backup exported yet.</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
     <section className="settings-section"><div><ExternalLink /><span><h2>Impulse website</h2><p>The public website remains separate from this private workspace.</p></span></div><a className="secondary-button" href="https://papertowel2030-hub.github.io/Impulse/" target="_blank" rel="noreferrer">Open website <ExternalLink /></a></section>
@@ -1034,7 +1103,7 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
       <label><span>Project price ₽ <small>optional</small></span><input type="number" min="0" value={quoted} onChange={(e) => setQuoted(e.target.value)} placeholder="0" /></label>
     </div>}
     {kind === 'lead' && (isEdit
-      ? <PaymentsEditor leadId={state.recordId!} quoted={quoted ? Number(quoted) : undefined} setToast={setToast} />
+      ? <PaymentsEditor leadId={state.recordId!} quoted={quoted ? Number(quoted) : undefined} currentUser={currentUser} setToast={setToast} />
       : <p className="payments-hint">Save the client first, then you can add deposits, installments, a retainer, or a revenue share.</p>)}
     <button type="button" className="more-toggle" onClick={() => setMore(!more)}>{more ? 'Hide details' : 'More details'}<ChevronDown /></button>
     {more && <div className="more-fields"><label><span>{kind === 'note' || kind === 'idea' ? 'Text' : 'Notes'} <small>optional</small></span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} placeholder="Add only the context someone will need later." /></label>{(kind === 'task' || kind === 'milestone' || kind === 'deliverable' || kind === 'lead') && <label><span>{kind === 'lead' ? 'Website' : 'Drive link'} <small>optional</small></span><input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" /></label>}{kind === 'task' && <label><span>Priority</span><select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></select></label>}</div>}
@@ -1056,7 +1125,7 @@ function modalConfig(kind: ModalKind) {
   return common
 }
 
-function PaymentsEditor({ leadId, quoted, setToast }: { leadId: string; quoted?: number; setToast: (toast: ToastState) => void }) {
+function PaymentsEditor({ leadId, quoted, currentUser, setToast }: { leadId: string; quoted?: number; currentUser: Owner; setToast: (toast: ToastState) => void }) {
   const payments = useLiveQuery(() => db.payments.where('leadId').equals(leadId).filter((p) => !p.archivedAt).sortBy('position'), [leadId], [])
   const [adding, setAdding] = useState<PaymentKind | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -1107,7 +1176,7 @@ function PaymentsEditor({ leadId, quoted, setToast }: { leadId: string; quoted?:
       {!payments.length && <p className="payments-empty">No payments yet. Add a deposit, an installment, a retainer, or a share.</p>}
     </div>
     {adding
-      ? <PaymentForm kind={adding} leadId={leadId} startPosition={nextPosition()} onDone={() => setAdding(null)} setToast={setToast} />
+      ? <PaymentForm kind={adding} leadId={leadId} startPosition={nextPosition()} currentUser={currentUser} onDone={() => setAdding(null)} setToast={setToast} />
       : <div className="payment-add-actions">
           <button type="button" onClick={() => setAdding('one_off')}><Plus /> Add payment</button>
           <button type="button" onClick={() => setAdding('retainer')}><Repeat /> Add recurring</button>
@@ -1137,7 +1206,7 @@ function PaymentRow({ payment, onToggle, onRemove, compact }: { payment: Payment
   </div>
 }
 
-function PaymentForm({ kind, leadId, startPosition, onDone, setToast }: { kind: PaymentKind; leadId: string; startPosition: number; onDone: () => void; setToast: (toast: ToastState) => void }) {
+function PaymentForm({ kind, leadId, startPosition, currentUser, onDone, setToast }: { kind: PaymentKind; leadId: string; startPosition: number; currentUser: Owner; onDone: () => void; setToast: (toast: ToastState) => void }) {
   const [label, setLabel] = useState(kind === 'retainer' ? 'Monthly retainer' : kind === 'share' ? 'Revenue share' : '')
   const [amount, setAmount] = useState('')
   const [percent, setPercent] = useState('')
@@ -1145,32 +1214,42 @@ function PaymentForm({ kind, leadId, startPosition, onDone, setToast }: { kind: 
   const [date, setDate] = useState('')
   const [startDate, setStartDate] = useState('')
   const [count, setCount] = useState('12')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
   const title = kind === 'retainer' ? 'Recurring retainer' : kind === 'share' ? 'Revenue / profit share' : 'One-off payment'
 
   const save = async () => {
+    if (saving) return
+    setSaving(true); setError('')
     const stamp = nowIso()
-    if (kind === 'one_off') {
-      await db.payments.add({
-        id: newId('payments', 'payment'), realmId: recordRealmId(), leadId, kind: 'one_off',
-        label: label.trim() || 'Payment', amount: amount ? Number(amount) : undefined,
-        timing, dueDate: timing === 'date' ? (date || undefined) : undefined,
-        status: 'due', position: startPosition, createdAt: stamp, updatedAt: stamp
-      })
-    } else {
-      const rows = generateRecurring({
-        leadId, realmId: recordRealmId(), kind,
-        label: label.trim() || (kind === 'retainer' ? 'Retainer' : 'Share'),
-        amount: kind === 'retainer' && amount ? Number(amount) : undefined,
-        percent: kind === 'share' && percent ? Number(percent) : undefined,
-        startDate: startDate || stamp.slice(0, 10),
-        count: Math.max(1, Number(count) || 1),
-        makeRowId: () => newId('payments', 'payment')
-      })
-      rows.forEach((r, i) => { r.position = startPosition + i })
-      await db.payments.bulkAdd(rows)
+    try {
+      if (kind === 'one_off') {
+        await db.payments.add({
+          id: newId('payments', 'payment'), realmId: recordRealmId(), leadId, kind: 'one_off',
+          label: label.trim() || 'Payment', amount: amount ? Number(amount) : undefined,
+          timing, dueDate: timing === 'date' ? (date || undefined) : undefined,
+          status: 'due', position: startPosition, createdAt: stamp, updatedAt: stamp, createdBy: currentUser
+        })
+      } else {
+        const rows = generateRecurring({
+          leadId, realmId: recordRealmId(), kind,
+          label: label.trim() || (kind === 'retainer' ? 'Retainer' : 'Share'),
+          amount: kind === 'retainer' && amount ? Number(amount) : undefined,
+          percent: kind === 'share' && percent ? Number(percent) : undefined,
+          startDate: startDate || stamp.slice(0, 10),
+          count: Math.max(1, Number(count) || 1), createdBy: currentUser,
+          makeRowId: () => newId('payments', 'payment')
+        })
+        rows.forEach((r, i) => { r.position = startPosition + i })
+        await db.payments.bulkAdd(rows)
+      }
+      setToast({ message: 'Payment added.' })
+      onDone()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add payment.')
+    } finally {
+      setSaving(false)
     }
-    setToast({ message: 'Payment added.' })
-    onDone()
   }
 
   return <div className="payment-form" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save() } }}>
@@ -1191,11 +1270,12 @@ function PaymentForm({ kind, leadId, startPosition, onDone, setToast }: { kind: 
       <label><span>Months</span><input type="number" min="1" max="120" value={count} onChange={(e) => setCount(e.target.value)} /></label>
     </div>}
     {kind === 'share' && <p className="payment-form-hint">Creates one row per month. Fill in each period's amount as it comes in.</p>}
-    <div className="payment-form-actions"><button type="button" onClick={onDone}>Cancel</button><button type="button" className="primary-button" onClick={save}>Add</button></div>
+    {error && <p className="form-error">{error}</p>}
+    <div className="payment-form-actions"><button type="button" onClick={onDone} disabled={saving}>Cancel</button><button type="button" className="primary-button" onClick={save} disabled={saving}>{saving ? 'Adding…' : 'Add'}</button></div>
   </div>
 }
 
-function ProjectModal({ state, onClose, setToast, openProject }: { state: ProjectModalState; onClose: () => void; setToast: (toast: ToastState) => void; openProject: (id: string) => void }) {
+function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { state: ProjectModalState; currentUser: Owner; onClose: () => void; setToast: (toast: ToastState) => void; openProject: (id: string) => void }) {
   const existing = useLiveQuery(() => state.projectId ? db.projects.get(state.projectId) : undefined, [state.projectId])
   const isEdit = Boolean(state.projectId)
   const [name, setName] = useState('')
@@ -1236,7 +1316,7 @@ function ProjectModal({ state, onClose, setToast, openProject }: { state: Projec
       } else {
         const count = await db.projects.count()
         const id = newId('projects', 'project')
-        await db.projects.add({ id, realmId: recordRealmId(), ...data, serviceType: clientType === 'internal' ? 'studio' : 'website', status: 'active', order: count + 1, createdAt: stamp, createdBy: undefined })
+        await db.projects.add({ id, realmId: recordRealmId(), ...data, serviceType: clientType === 'internal' ? 'studio' : 'website', status: 'active', order: count + 1, createdAt: stamp, createdBy: currentUser })
         setToast({ message: 'Project created. Add the first plan step.' })
         openProject(id)
       }
