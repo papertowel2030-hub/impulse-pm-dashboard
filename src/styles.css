@@ -57,7 +57,7 @@ h3 { font-size: .95rem; }
 
 /* ---------- Shell ---------- */
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 240px minmax(0, 1fr); }
-.sidebar { position: sticky; top: 0; height: 100vh; background: rgba(8, 11, 19, .8); border-right: 1px solid var(--line); padding: 26px 16px 18px; display: flex; flex-direction: column; z-index: 30; }
+.sidebar { position: sticky; top: 0; height: 100vh; height: 100dvh; overflow-y: auto; background: rgba(8, 11, 19, .8); border-right: 1px solid var(--line); padding: 26px 16px 18px; display: flex; flex-direction: column; z-index: 30; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 30px; }
 .brand span:last-child { display: grid; }
 .brand strong { font-family: var(--display); font-weight: 600; font-size: .95rem; letter-spacing: .01em; }
@@ -217,6 +217,7 @@ h3 { font-size: .95rem; }
 .milestone-step.blocked > span { border-color: var(--warning); color: var(--warning); }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 var(--accent-glow); } 70% { box-shadow: 0 0 0 12px rgba(46, 230, 255, 0); } 100% { box-shadow: 0 0 0 0 rgba(46, 230, 255, 0); } }
 @media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   .milestone-step.in_progress > span { animation: none; box-shadow: 0 0 14px var(--accent-glow); }
   html { scroll-behavior: auto; }
 }
@@ -348,6 +349,15 @@ h3 { font-size: .95rem; }
 .partner-status-row { font-size: .83rem; color: var(--muted); }
 .partner-status-row strong { color: var(--ink); }
 .settings-section code { font-family: var(--mono); font-size: .78em; background: var(--surface-2); border: 1px solid var(--soft-line); border-radius: 5px; padding: 2px 6px; }
+.archived-projects { display: grid; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.archived-project-row { min-height: 70px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 14px; background: var(--surface); border-bottom: 1px solid var(--soft-line); }
+.archived-project-row:last-child { border-bottom: 0; }
+.archived-project-row > span:nth-child(2) { display: grid; gap: 3px; min-width: 0; }
+.archived-project-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archived-project-row small { color: var(--subtle); font-family: var(--mono); font-size: .68rem; }
+.archived-project-actions { display: flex; align-items: center; gap: 12px; }
+.archived-project-actions .danger-link { display: inline-flex; align-items: center; gap: 6px; }
+.archived-project-actions button:disabled { opacity: .5; cursor: wait; }
 
 /* ---------- Login ---------- */
 .login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 30% 0%, rgba(46, 230, 255, .07), transparent 45%), var(--bg); }
@@ -358,7 +368,7 @@ h3 { font-size: .95rem; }
 
 /* ---------- Modal & toast ---------- */
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 18px; background: rgba(2, 4, 8, .7); backdrop-filter: blur(5px); }
-.modal { width: min(560px, 100%); max-height: calc(100vh - 36px); overflow-y: auto; background: var(--surface-2); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
+.modal { width: min(560px, 100%); max-height: calc(100vh - 36px); max-height: calc(100dvh - 36px); overflow-y: auto; background: var(--surface-2); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
 .modal > header { padding: 24px 26px 12px; display: flex; justify-content: space-between; align-items: flex-start; }
 .modal > header h2 { margin: 0; font-size: 1.3rem; }
 .modal > header button { border: 0; background: transparent; padding: 5px; color: var(--muted); }
@@ -480,6 +490,8 @@ h3 { font-size: .95rem; }
   .idea-row { flex-wrap: wrap; }
   .idea-row .idea-actions { margin-left: 30px; }
   .form-row-3 { grid-template-columns: 1fr; }
+  .archived-project-row { grid-template-columns: auto minmax(0, 1fr); }
+  .archived-project-actions { grid-column: 2; flex-wrap: wrap; }
 }
 
 @media (max-width: 520px) {

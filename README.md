@@ -49,7 +49,7 @@ Never commit `dexie-cloud.key`; it is excluded by `.gitignore`.
 
 ## Deploy to GitHub Pages
 
-The included workflow publishes every push to `main`. In the repository settings, enable GitHub Pages with **GitHub Actions** as the source. Add `VITE_DEXIE_CLOUD_URL` as a repository variable named `VITE_DEXIE_CLOUD_URL`.
+The included workflow publishes every push to `main`. In the repository settings, enable GitHub Pages with **GitHub Actions** as the source. Add all three values from `.env.example` as repository variables: `VITE_DEXIE_CLOUD_URL`, `VITE_OWNER_EMAIL_HASHES`, and `VITE_MEMBER_EMAIL_HASHES`.
 
 The marketing website remains separate. Share the dashboard URL privately.
 
