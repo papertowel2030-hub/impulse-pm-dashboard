@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   Archive, CalendarDays, Check, ChevronDown, ChevronRight, CloudOff, Download, ExternalLink,
   FileCheck2, FolderKanban, Home, Lightbulb, Link2, LogIn, LogOut, Menu, MessageSquareText, NotebookPen,
-  Pencil, Plus, Repeat, Settings, Star, Target, Trash2, Upload, UserPlus, Users, Wallet, X
+  Pencil, Plus, Repeat, Search, Settings, Star, Target, Trash2, Upload, UserPlus, Users, Wallet, X
 } from 'lucide-react'
 import { db, cloudEnabled, newId, recordRealmId, getActiveRealmId, setActiveRealmId, createWorkspaceRealm, restampLegacyRealm, seedIfEmpty, convertDeliverablesToPlan, convertPaidToPayments, deleteProjectPermanently, resetLocalData } from './db'
 import { importWorkspaceFile } from './importData'
@@ -23,6 +23,8 @@ const owners: Owner[] = ['Moon', 'Kira', 'Moon + Kira']
 const taskStatuses = Object.keys(taskStatusLabels) as TaskStatus[]
 const milestoneStatuses = Object.keys(milestoneStatusLabels) as MilestoneStatus[]
 const projectColors = ['#2ee6ff', '#ffb86b', '#7aa2f7', '#5fe0a8', '#ff8585', '#c3a6ff', '#ffd166', '#93a7c4']
+const activeLeadStages: LeadStage[] = ['prospect', 'contacted', 'replied', 'discovery', 'proposal']
+const clientListBatchSize = 15
 
 const ownerShort: Record<Owner, string> = { Moon: 'M', Kira: 'K', 'Moon + Kira': 'M+K' }
 
@@ -518,10 +520,13 @@ function HomeView({ openProject, navigate }: { openProject: (id: string) => void
   const dueFollowUps = leads.filter((lead) => lead.followUpDate && daysUntil(lead.followUpDate) <= 7).sort((a, b) => (a.followUpDate ?? '').localeCompare(b.followUpDate ?? '')).slice(0, 3)
   const thisWeek = tasks.filter((task) => task.status === 'next' || task.status === 'in_progress').sort((a, b) => (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999')).slice(0, 6)
   const backupAge = backups[0] ? daysSince(backups[0].exportedAt) : Infinity
+  const [backupReminderDismissedAt, setBackupReminderDismissedAt] = usePersistedState('impulse:backup-reminder-dismissed-at', '')
+  const [importPromptDismissed, setImportPromptDismissed] = usePersistedState('impulse:import-prompt-dismissed', false)
+  const backupReminderSnoozed = backupReminderDismissedAt ? daysSince(backupReminderDismissedAt) < 30 : false
 
   return <div className="page">
     <PageHeader eyebrow="Today" title="What needs attention" description="Only active work and upcoming decisions." />
-    {backupAge >= 30 && <div className="gentle-banner"><Archive /><span><strong>Monthly backup is due.</strong> Export it from Settings when you have a quiet moment.</span><button onClick={() => navigate('settings')}>Open settings</button></div>}
+    {backupAge >= 30 && !backupReminderSnoozed && <div className="gentle-banner"><Archive /><span><strong>Monthly backup is due.</strong> Export it from Settings when you have a quiet moment.</span><div className="banner-actions"><button className="banner-link" onClick={() => navigate('settings')}>Open settings</button><button className="notice-dismiss" aria-label="Dismiss monthly backup reminder for 30 days" onClick={() => setBackupReminderDismissedAt(nowIso())}><X /></button></div></div>}
     <section className="attention-list" aria-label="Active projects">
       {projects.sort((a, b) => a.order - b.order).map((project) => {
         const projectMilestones = milestones.filter((m) => m.projectId === project.id).sort((a, b) => a.position - b.position)
@@ -541,7 +546,7 @@ function HomeView({ openProject, navigate }: { openProject: (id: string) => void
           <ChevronRight />
         </button>
       })}
-      {!projects.length && <div className="first-run-card"><p className="eyebrow">First setup</p><h2>Bring in your Command Center</h2><p>Your private client data is kept outside the public app build. Import the prepared local file once, then continue here.</p><ol><li>Open Settings</li><li>Choose the Command Center import file</li><li>Review the three project overviews</li></ol><button className="primary-button" onClick={() => navigate('settings')}>Open settings</button></div>}
+      {!projects.length && !importPromptDismissed && <div className="first-run-card"><button className="notice-dismiss" aria-label="Dismiss import reminder" onClick={() => setImportPromptDismissed(true)}><X /></button><p className="eyebrow">First setup</p><h2>Bring in your Command Center</h2><p>Your private client data is kept outside the public app build. Import the prepared local file once, then continue here.</p><ol><li>Open Settings</li><li>Choose the Command Center import file</li><li>Review the three project overviews</li></ol><button className="primary-button" onClick={() => navigate('settings')}>Open settings</button></div>}
     </section>
 
     <UpcomingDeadlines projects={projects} milestones={milestones} tasks={tasks} leads={leads} payments={payments} allLeads={allLeads} />
@@ -717,27 +722,84 @@ function LinksView({ project, openAdd }: { project: Project; openAdd: (kind: Exc
 function ClientsView({ addLead, openModal }: { addLead: () => void; openModal: (id: string) => void }) {
   const leads = useLiveQuery(() => db.leads.filter((l) => !l.archivedAt).toArray(), [], [])
   const payments = useLiveQuery(() => db.payments.filter((p) => !p.archivedAt).toArray(), [], [])
-  const paymentsFor = (leadId: string) => payments.filter((p) => p.leadId === leadId)
+  const [stageFilter, setStageFilter] = useState('active')
+  const [serviceFilter, setServiceFilter] = useState('all')
+  const [query, setQuery] = useState('')
+  const [visibleCount, setVisibleCount] = useState(clientListBatchSize)
+  const paymentsByLead = useMemo(() => {
+    const grouped = new Map<string, Payment[]>()
+    payments.forEach((payment) => grouped.set(payment.leadId, [...(grouped.get(payment.leadId) ?? []), payment]))
+    return grouped
+  }, [payments])
+  const serviceFor = (lead: Lead) => lead.serviceInterest?.trim() || lead.tariff?.trim() || ''
+  const serviceOptions = useMemo(() => Array.from(new Set(leads.map(serviceFor).filter(Boolean))).sort((a, b) => a.localeCompare(b)), [leads])
+  const activeLeads = leads.filter((lead) => activeLeadStages.includes(lead.stage))
+  const dueFollowUps = activeLeads.filter((lead) => lead.followUpDate && daysUntil(lead.followUpDate) <= 7).length
+  const potentialTotal = activeLeads.reduce((total, lead) => total + (lead.quoted ?? 0), 0)
   const receivedTotal = sumReceived(payments)
   const dueTotal = sumDue(payments)
+  const stageCounts = Object.fromEntries(leadStageGroups.map((group) => [group.key, leads.filter((lead) => group.stages.includes(lead.stage)).length]))
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const filteredLeads = leads.filter((lead) => {
+    const matchesStage = stageFilter === 'all'
+      || (stageFilter === 'active' ? activeLeadStages.includes(lead.stage) : leadStageGroups.find((group) => group.key === stageFilter)?.stages.includes(lead.stage))
+    const matchesService = serviceFilter === 'all' || serviceFor(lead) === serviceFilter
+    const matchesQuery = !normalizedQuery || [lead.business, lead.contact, lead.serviceInterest, lead.tariff, lead.nextAction]
+      .some((value) => value?.toLocaleLowerCase().includes(normalizedQuery))
+    return Boolean(matchesStage && matchesService && matchesQuery)
+  }).sort((a, b) => {
+    const dateOrder = (a.followUpDate ?? '9999-12-31').localeCompare(b.followUpDate ?? '9999-12-31')
+    const stageOrder = leadStageGroups.findIndex((group) => group.stages.includes(a.stage)) - leadStageGroups.findIndex((group) => group.stages.includes(b.stage))
+    return dateOrder || stageOrder || a.business.localeCompare(b.business)
+  })
+  const visibleLeads = filteredLeads.slice(0, visibleCount)
+
+  useEffect(() => setVisibleCount(clientListBatchSize), [stageFilter, serviceFilter, query])
+
   return <div className="page"><PageHeader eyebrow="Outreach" title="Clients & Money"
-    description={<>Every client has one next action.{(receivedTotal > 0 || dueTotal > 0) && <span className="money-totals"> Received {formatMoney(receivedTotal)} · Due {formatMoney(dueTotal)}</span>}</>}
+    description="A focused view of the pipeline, follow-ups and cash — even when the list gets long."
     action={<button className="primary-button" onClick={addLead}><Plus /> Add client</button>} />
-    <div className="pipeline">{leadStageGroups.map((group) => {
-      const groupLeads = leads.filter((l) => group.stages.includes(l.stage))
-      return <section className={`pipeline-stage stage-${group.key}`} key={group.key}><div className="column-heading"><h2>{group.label}</h2><span>{groupLeads.length}</span></div>{groupLeads.map((lead) => {
-        const leadPayments = paymentsFor(lead.id)
+    <section className="client-summary" aria-label="Client pipeline summary">
+      <div><span>Active pipeline</span><strong>{activeLeads.length}</strong><small>of {leads.length} total clients</small></div>
+      <div className={dueFollowUps ? 'needs-attention' : ''}><span>Follow-ups due</span><strong>{dueFollowUps}</strong><small>overdue or next 7 days</small></div>
+      <div><span>Potential value</span><strong>{formatMoney(potentialTotal) || '₽0'}</strong><small>quoted on active clients</small></div>
+      <div><span>Money</span><strong>{formatMoney(receivedTotal) || '₽0'}</strong><small>received{dueTotal > 0 ? ` · ${formatMoney(dueTotal)} due` : ' · nothing due'}</small></div>
+    </section>
+
+    <div className="stage-filters" aria-label="Filter clients by stage">
+      {[{ key: 'active', label: 'Active', count: activeLeads.length }, { key: 'all', label: 'All', count: leads.length }, ...leadStageGroups.map((group) => ({ ...group, count: stageCounts[group.key] ?? 0 }))].map((filter) =>
+        <button key={filter.key} className={stageFilter === filter.key ? 'active' : ''} aria-pressed={stageFilter === filter.key} onClick={() => setStageFilter(filter.key)}><span>{filter.label}</span><strong>{filter.count}</strong></button>
+      )}
+    </div>
+
+    <div className="client-toolbar">
+      <label className="client-search"><Search /><span className="sr-only">Search clients</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search client, contact or next action" /></label>
+      <label className="client-service-filter"><span>Service</span><select value={serviceFilter} onChange={(event) => setServiceFilter(event.target.value)}><option value="all">All services</option>{serviceOptions.map((service) => <option key={service} value={service}>{service}</option>)}</select></label>
+      <span className="client-results-count">{filteredLeads.length} {filteredLeads.length === 1 ? 'client' : 'clients'}</span>
+    </div>
+
+    <div className="client-register">
+      <div className="client-register-head"><span>Client</span><span>Stage</span><span>Next action</span><span>Follow-up</span><span>Money</span><span /></div>
+      {visibleLeads.map((lead) => {
+        const leadPayments = paymentsByLead.get(lead.id) ?? []
         const received = sumReceived(leadPayments)
-        const next = nextPayment(leadPayments)
-        return <button className="lead-card" key={lead.id} onClick={() => openModal(lead.id)}>
-          <strong>{lead.business}</strong>
-          <span>{lead.owner}{lead.tariff ? ` · ${lead.tariff}` : ''}</span>
-          <p>{lead.nextAction || 'Set a next action'}</p>
-          {(received > 0 || lead.quoted || next) ? <em className="money-line">{received > 0 ? `${formatMoney(received)} received` : 'Nothing received'}{lead.quoted && received < lead.quoted ? ` of ${formatMoney(lead.quoted)}` : ''}{next ? ` · next ${next.amount ? formatMoney(next.amount) : next.label} ${formatDate(next.dueDate)}` : ''}</em> : null}
-          {lead.followUpDate && <time className={isOverdue(lead.followUpDate) ? 'overdue' : ''}>{formatDate(lead.followUpDate)}</time>}
+        const due = sumDue(leadPayments)
+        const group = leadStageGroups.find((item) => item.stages.includes(lead.stage))
+        const service = serviceFor(lead)
+        const moneyValue = received || lead.quoted || due
+        const moneyLabel = received ? 'received' : lead.quoted ? 'quoted' : due ? 'due' : 'No value yet'
+        return <button className="client-row" key={lead.id} onClick={() => openModal(lead.id)} aria-label={`Edit ${lead.business}`}>
+          <span className="client-identity"><strong>{lead.business}</strong><small>{lead.owner}{service ? ` · ${service}` : ''}</small></span>
+          <span className="client-stage-cell"><span className={`client-stage stage-${group?.key ?? 'lead'}`}>{group?.label ?? 'Lead'}</span></span>
+          <span className="client-next">{lead.nextAction || 'Set a next action'}</span>
+          <span className="client-followup">{lead.followUpDate ? <><time className={isOverdue(lead.followUpDate) ? 'overdue' : ''}>{formatDate(lead.followUpDate)}</time>{isOverdue(lead.followUpDate) && <small>Overdue</small>}</> : <small>No date</small>}</span>
+          <span className="client-money"><strong>{moneyValue ? formatMoney(moneyValue) : '—'}</strong><small>{moneyLabel}{due > 0 && moneyLabel !== 'due' ? ` · ${formatMoney(due)} due` : ''}</small></span>
+          <ChevronRight />
         </button>
-      })}</section>
-    })}</div>
+      })}
+      {!visibleLeads.length && <div className="client-empty"><strong>No clients found</strong><span>Try another stage, service or search.</span></div>}
+    </div>
+    {filteredLeads.length > 0 && <div className="client-list-footer"><span>Showing {visibleLeads.length} of {filteredLeads.length}</span>{visibleLeads.length < filteredLeads.length && <button className="secondary-button" onClick={() => setVisibleCount((count) => count + clientListBatchSize)}>Show {Math.min(clientListBatchSize, filteredLeads.length - visibleLeads.length)} more</button>}</div>}
   </div>
 }
 
