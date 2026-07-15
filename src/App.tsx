@@ -560,12 +560,12 @@ function OwnerChip({ owner }: { owner: Owner }) {
 
 type HomeSection = 'focus' | 'projects' | 'schedule' | 'tasks' | 'followups' | 'meeting'
 
-function HomeSectionButton({ id, active, icon, title, hint, count, onClick }: {
-  id: HomeSection; active: boolean; icon: React.ReactNode; title: string; hint: string; count: number; onClick: () => void
+function HomeSectionButton({ id, active, icon, title, count, onClick }: {
+  id: HomeSection; active: boolean; icon: React.ReactNode; title: string; count: number; onClick: () => void
 }) {
   return <button className={`home-section-button ${active ? 'active' : ''}`} onClick={onClick} aria-expanded={active} aria-controls="home-section-content">
     <span className="home-section-icon">{icon}</span>
-    <span><strong>{title}</strong><small>{hint}</small></span>
+    <strong>{title}</strong>
     <span className="home-section-count">{count}</span>
     <ChevronRight className="home-section-chevron" />
   </button>
@@ -596,24 +596,24 @@ function HomeView({ openProject, navigate, openEdit, openClient }: {
     ...urgentTasks.map((task) => ({ id: `task-${task.id}`, title: task.title, meta: `Task · ${projects.find((p) => p.id === task.projectId)?.name ?? 'Project'}`, date: task.dueDate, open: () => openEdit('task', task.projectId, task.id), urgent: Boolean(task.dueDate && isOverdue(task.dueDate)) })),
     ...dueFollowUps.map((lead) => ({ id: `lead-${lead.id}`, title: lead.business, meta: `Follow-up · ${lead.nextAction || 'Choose the next action'}`, date: lead.followUpDate, open: () => openClient(lead.id), urgent: Boolean(lead.followUpDate && isOverdue(lead.followUpDate)) }))
   ].slice(0, 7)
-  const sectionButtons: { id: HomeSection; icon: React.ReactNode; title: string; hint: string; count: number }[] = [
-    { id: 'focus', icon: <Target />, title: 'Focus', hint: 'Only what may need you now', count: blockers.length + urgentTasks.length + dueFollowUps.length },
-    { id: 'projects', icon: <FolderKanban />, title: 'Projects', hint: 'Current focus and blockers', count: projects.length },
-    { id: 'schedule', icon: <CalendarDays />, title: 'Next 14 days', hint: 'Dated work and payments', count: milestones.filter((m) => m.dueDate && m.status !== 'done' && daysUntil(m.dueDate) <= 14).length + tasks.filter((t) => t.dueDate && t.status !== 'done' && daysUntil(t.dueDate) <= 14).length + leads.filter((l) => l.followUpDate && daysUntil(l.followUpDate) <= 14).length + payments.filter((p) => p.dueDate && daysUntil(p.dueDate) <= 14).length },
-    { id: 'tasks', icon: <Check />, title: 'Next tasks', hint: 'The queue, when you need it', count: nextTasks.length },
-    { id: 'followups', icon: <UserPlus />, title: 'Client follow-ups', hint: 'Due in the next seven days', count: dueFollowUps.length },
-    { id: 'meeting', icon: <MessageSquareText />, title: 'Meeting', hint: 'Unresolved topics', count: meetingItems.length }
+  const sectionButtons: { id: HomeSection; icon: React.ReactNode; title: string; count: number }[] = [
+    { id: 'focus', icon: <Target />, title: 'Focus', count: blockers.length + urgentTasks.length + dueFollowUps.length },
+    { id: 'projects', icon: <FolderKanban />, title: 'Projects', count: projects.length },
+    { id: 'schedule', icon: <CalendarDays />, title: '14 days', count: milestones.filter((m) => m.dueDate && m.status !== 'done' && daysUntil(m.dueDate) <= 14).length + tasks.filter((t) => t.dueDate && t.status !== 'done' && daysUntil(t.dueDate) <= 14).length + leads.filter((l) => l.followUpDate && daysUntil(l.followUpDate) <= 14).length + payments.filter((p) => p.dueDate && daysUntil(p.dueDate) <= 14).length },
+    { id: 'tasks', icon: <Check />, title: 'Tasks', count: nextTasks.length },
+    { id: 'followups', icon: <UserPlus />, title: 'Follow-ups', count: dueFollowUps.length },
+    { id: 'meeting', icon: <MessageSquareText />, title: 'Meeting', count: meetingItems.length }
   ]
 
   return <div className="page">
-    <PageHeader eyebrow="Today" title="One thing at a time" description="Pick a section. Everything else stays quiet until you open it." />
+    <PageHeader title="Today" />
     <div className="calm-dashboard">
       <nav className="home-section-picker" aria-label="Dashboard sections">
         {sectionButtons.map((item) => <HomeSectionButton key={item.id} {...item} active={section === item.id} onClick={() => setSection(item.id)} />)}
       </nav>
 
       <section className="home-section-content" id="home-section-content" aria-live="polite">
-        {section === 'focus' && <div className="focus-panel"><div className="focus-intro"><p className="eyebrow">Right now</p><h2>{focusItems.length ? `${focusItems.length} ${focusItems.length === 1 ? 'item' : 'items'} worth checking` : 'Nothing urgent'}</h2><p>{focusItems.length ? 'Start at the top. The rest can wait.' : 'You can choose another section without carrying an alert state.'}</p></div><div className="simple-list focus-list">{focusItems.map((item) => <div className="list-row is-actionable" key={item.id}><span><button className="row-main" onClick={item.open}><strong>{item.title}</strong><small>{item.meta}</small></button></span>{item.date && <time className={item.urgent ? 'overdue' : ''}>{formatDate(item.date)}</time>}<ChevronRight /></div>)}{!focusItems.length && <EmptyState text="No blockers, urgent tasks, or follow-ups due." />}</div></div>}
+        {section === 'focus' && <div className="simple-list focus-list">{focusItems.map((item) => <div className="list-row is-actionable" key={item.id}><span><button className="row-main" onClick={item.open}><strong>{item.title}</strong><small>{item.meta}</small></button></span>{item.date && <time className={item.urgent ? 'overdue' : ''}>{formatDate(item.date)}</time>}<ChevronRight /></div>)}{!focusItems.length && <EmptyState text="Nothing urgent." />}</div>}
 
         {section === 'projects' && <section className="attention-list" aria-label="Active projects">
           {projects.sort((a, b) => {
