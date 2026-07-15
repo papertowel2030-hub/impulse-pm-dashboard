@@ -37,7 +37,7 @@ export async function importWorkspaceFile(file: File, realmId?: string) {
   if (cloudEnabled && !realmId) throw new Error('Workspace is still connecting. Try again in a moment, then import.')
 
   const rows = {
-    projects: data.seedProjects.map((p) => ({ ...p, id: prefixedId('projects', p.id)! })),
+    projects: data.seedProjects.map((p) => ({ ...p, id: prefixedId('projects', p.id)!, clientId: prefixedId('leads', p.clientId) })),
     milestones: (data.seedMilestones ?? []).map((m) => ({ ...m, id: prefixedId('milestones', m.id)!, projectId: prefixedId('projects', m.projectId)! })),
     deliverables: (data.seedDeliverables ?? []).map((d) => ({ ...d, id: prefixedId('deliverables', d.id)!, projectId: prefixedId('projects', d.projectId)! })),
     tasks: (data.seedTasks ?? []).map((t) => ({ ...t, id: prefixedId('tasks', t.id)!, projectId: prefixedId('projects', t.projectId)! })),

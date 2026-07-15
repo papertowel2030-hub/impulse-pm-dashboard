@@ -21,6 +21,8 @@ export interface BaseRecord {
 }
 
 export interface Project extends BaseRecord {
+  /** Optional client/opportunity this delivery project belongs to. */
+  clientId?: string
   name: string
   clientType: 'client' | 'internal'
   serviceType: 'social_local' | 'website' | 'studio'
@@ -67,6 +69,8 @@ export interface Task extends BaseRecord {
   notes?: string
   driveUrl?: string
   position: number
+  /** Meeting topic that produced this task, when applicable. */
+  sourceMeetingItemId?: string
 }
 
 export interface Note extends BaseRecord {
@@ -75,6 +79,8 @@ export interface Note extends BaseRecord {
   body: string
   kind: 'note' | 'decision' | 'idea'
   author: Owner
+  /** Meeting topic that produced this decision, when applicable. */
+  sourceMeetingItemId?: string
 }
 
 export interface Meeting extends BaseRecord {

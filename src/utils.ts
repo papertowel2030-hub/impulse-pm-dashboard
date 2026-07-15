@@ -84,7 +84,7 @@ export function titleCase(value: string) {
 }
 
 export const taskStatusLabels: Record<TaskStatus, string> = {
-  backlog: 'Todo', next: 'This week', in_progress: 'In progress', waiting: 'Waiting', done: 'Done'
+  backlog: 'Later', next: 'To do', in_progress: 'Doing', waiting: 'Waiting', done: 'Done'
 }
 
 export const milestoneStatusLabels: Record<MilestoneStatus, string> = {
@@ -99,17 +99,18 @@ export const meetingStatusLabels: Record<MeetingItemStatus, string> = {
   open: 'Open', decision: 'Decision', action: 'Action', deferred: 'Deferred', closed: 'Closed'
 }
 
-// Wording from the original Command Center workbook: lead / writing / meeting / paid / lost.
-// Old 7-value records keep their stored stage; the board groups them into five columns.
+// Keep each stored lead stage visible so users can understand and update the actual client state.
 export const leadStageLabels: Record<LeadStage, string> = {
-  prospect: 'Lead', contacted: 'Writing', replied: 'Writing', discovery: 'Meeting', proposal: 'Meeting', won: 'Paid', lost: 'Lost'
+  prospect: 'New lead', contacted: 'Contacted', replied: 'Replied', discovery: 'Discovery', proposal: 'Proposal', won: 'Won', lost: 'Lost'
 }
 
 export const leadStageGroups: { key: string; label: string; stages: LeadStage[]; canonical: LeadStage }[] = [
-  { key: 'lead', label: 'Lead', stages: ['prospect'], canonical: 'prospect' },
-  { key: 'writing', label: 'Writing', stages: ['contacted', 'replied'], canonical: 'contacted' },
-  { key: 'meeting', label: 'Meeting', stages: ['discovery', 'proposal'], canonical: 'discovery' },
-  { key: 'paid', label: 'Paid', stages: ['won'], canonical: 'won' },
+  { key: 'prospect', label: 'New', stages: ['prospect'], canonical: 'prospect' },
+  { key: 'contacted', label: 'Contacted', stages: ['contacted'], canonical: 'contacted' },
+  { key: 'replied', label: 'Replied', stages: ['replied'], canonical: 'replied' },
+  { key: 'discovery', label: 'Discovery', stages: ['discovery'], canonical: 'discovery' },
+  { key: 'proposal', label: 'Proposal', stages: ['proposal'], canonical: 'proposal' },
+  { key: 'won', label: 'Won', stages: ['won'], canonical: 'won' },
   { key: 'lost', label: 'Lost', stages: ['lost'], canonical: 'lost' }
 ]
 

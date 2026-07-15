@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
   Archive, CalendarDays, Check, ChevronDown, ChevronRight, CloudOff, Download, ExternalLink,
@@ -13,14 +13,14 @@ import type {
 } from './types'
 import {
   activeMeetingStatus, addMonthsIso, daysSince, daysUntil, formatDate, formatMoney, fullDate, generateRecurring,
-  isOverdue, isSafeUrl, leadStageGroups, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
+  isOverdue, isSafeUrl, leadStageGroups, leadStageLabels, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
   nowIso, paymentTimingLabels, resolveWorkspaceRealmId, sumDue, sumReceived, taskStatusLabels
 } from './utils'
 
 const paymentTimings = Object.keys(paymentTimingLabels) as PaymentTiming[]
 
 const owners: Owner[] = ['Moon', 'Kira', 'Moon + Kira']
-const taskStatuses = Object.keys(taskStatusLabels) as TaskStatus[]
+const taskStatuses: TaskStatus[] = ['next', 'in_progress', 'waiting', 'backlog', 'done']
 const milestoneStatuses = Object.keys(milestoneStatusLabels) as MilestoneStatus[]
 const projectColors = ['#2ee6ff', '#ffb86b', '#7aa2f7', '#5fe0a8', '#ff8585', '#c3a6ff', '#ffd166', '#93a7c4']
 const activeLeadStages: LeadStage[] = ['prospect', 'contacted', 'replied', 'discovery', 'proposal']
@@ -28,9 +28,28 @@ const clientListBatchSize = 15
 
 const ownerShort: Record<Owner, string> = { Moon: 'M', Kira: 'K', 'Moon + Kira': 'M+K' }
 
-interface ToastState { message: string; action?: { label: string; run: () => void } }
+interface ToastState { message: string; action?: { label: string; run: () => unknown } }
 interface ModalState { kind: ModalKind; projectId?: string; recordId?: string }
-interface ProjectModalState { projectId?: string }
+interface ProjectModalState { projectId?: string; clientId?: string }
+
+function useDialogBehavior(ref: React.RefObject<HTMLElement>, onClose: () => void) {
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); onClose(); return }
+      if (event.key !== 'Tab' || !ref.current) return
+      const focusable = Array.from(ref.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]'))
+        .filter((element) => element.offsetParent !== null)
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('keydown', onKey); previous?.focus?.() }
+  }, [onClose, ref])
+}
 
 function usePersistedState<T>(key: string, fallback: T) {
   const [value, setValue] = useState<T>(() => {
@@ -267,6 +286,7 @@ export default function App() {
   const [toast, setToast] = useState<ToastState | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
   const online = useOnlineStatus()
   const cloudUser = useCloudUser()
   const isCloudLoggedIn = !cloudEnabled || Boolean(cloudUser?.isLoggedIn)
@@ -296,6 +316,19 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [toast])
 
+  useEffect(() => {
+    if (!menuOpen && !mobileNavOpen) return
+    const closeOnOutside = (event: PointerEvent) => {
+      if (menuOpen && userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) setMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setMenuOpen(false); setMobileNavOpen(false) }
+    }
+    document.addEventListener('pointerdown', closeOnOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => { document.removeEventListener('pointerdown', closeOnOutside); window.removeEventListener('keydown', closeOnEscape) }
+  }, [menuOpen, mobileNavOpen])
+
   const projects = useLiveQuery(() => db.projects.filter((project) => !project.archivedAt).toArray(), [], [])
 
   if (access === 'signed-out') return <LoginScreen />
@@ -307,12 +340,15 @@ export default function App() {
     setView(next)
     setMobileNavOpen(false)
     setMenuOpen(false)
+    window.scrollTo({ top: 0 })
   }
 
   const openProject = (id: string) => {
     setSelectedProjectId(id)
     setProjectTab('overview')
     setView('projects')
+    setMobileNavOpen(false)
+    window.scrollTo({ top: 0 })
   }
 
   const openQuickAdd = (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => {
@@ -329,10 +365,10 @@ export default function App() {
           <span><strong>Impulse</strong><small>Command Center</small></span>
         </div>
         <nav>
-          <NavButton active={view === 'home'} icon={<Home />} label="Home" onClick={() => navigate('home')} />
+          <NavButton active={view === 'home'} icon={<Home />} label="Today" onClick={() => navigate('home')} />
           <NavButton active={view === 'projects'} icon={<FolderKanban />} label="Projects" onClick={() => navigate('projects')} />
-          <NavButton active={view === 'sales'} icon={<Target />} label="Clients & Money" onClick={() => navigate('sales')} />
-          <NavButton active={view === 'meeting'} icon={<MessageSquareText />} label="Next Meeting" onClick={() => navigate('meeting')} />
+          <NavButton active={view === 'sales'} icon={<Target />} label="Clients" onClick={() => navigate('sales')} />
+          <NavButton active={view === 'meeting'} icon={<MessageSquareText />} label="Meeting" onClick={() => navigate('meeting')} />
         </nav>
         <div className="sidebar-projects" aria-label="Active projects">
           <p>Active projects</p>
@@ -345,17 +381,18 @@ export default function App() {
         </div>
         <button className="sidebar-settings" onClick={() => navigate('settings')}><Settings /> Settings</button>
       </aside>
+      {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
 
       <div className="app-main">
         <header className="topbar">
           <button className="mobile-menu" aria-label="Toggle navigation" onClick={() => setMobileNavOpen(!mobileNavOpen)}><Menu /></button>
           <div className="topbar-context">
-            <span>{view === 'meeting' ? 'Partner workspace' : 'Impulse Workspace'}</span>
+            <span>Impulse Workspace</span>
             {!online && <span className="sync-state"><CloudOff /> Offline</span>}
           </div>
           <div className="topbar-actions">
             <QuickAdd onSelect={(kind) => openQuickAdd(kind)} />
-            <div className="user-menu-wrap">
+            <div className="user-menu-wrap" ref={userMenuRef}>
               <button className="user-button" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen}>
                 <span className="avatar">{ownerShort[currentUser]}</span>
                 <span className="user-name">{currentUser}</span><ChevronDown />
@@ -383,7 +420,7 @@ export default function App() {
         </header>
 
         <main id="main">
-          {view === 'home' && <HomeView openProject={openProject} navigate={navigate} />}
+          {view === 'home' && <HomeView openProject={openProject} navigate={navigate} openEdit={openQuickAdd} openClient={(id) => setModal({ kind: 'lead', recordId: id })} />}
           {view === 'projects' && (
             <ProjectsView
               selectedProjectId={selectedProjectId}
@@ -392,6 +429,7 @@ export default function App() {
               setTab={setProjectTab}
               openAdd={openQuickAdd}
               openProjectEdit={(id) => setProjectModal({ projectId: id })}
+              openClient={(id) => setModal({ kind: 'lead', recordId: id })}
               setToast={setToast}
             />
           )}
@@ -401,7 +439,9 @@ export default function App() {
         </main>
       </div>
 
-      {modal.kind && <EntryModal state={modal} currentUser={currentUser} onClose={() => setModal({ kind: null })} setToast={setToast} />}
+      {modal.kind && <EntryModal state={modal} currentUser={currentUser} onClose={() => setModal({ kind: null })} setToast={setToast}
+        createProjectForClient={(clientId) => { setModal({ kind: null }); setProjectModal({ clientId }) }}
+        openProject={(projectId) => { setModal({ kind: null }); openProject(projectId) }} />}
       {projectModal && <ProjectModal state={projectModal} currentUser={currentUser} onClose={() => setProjectModal(null)} setToast={setToast} openProject={openProject} />}
       {toast && <Toast toast={toast} close={() => setToast(null)} />}
     </div>
@@ -486,9 +526,18 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
 
 function QuickAdd({ onSelect }: { onSelect: (kind: 'task' | 'note' | 'discussion' | 'idea') => void }) {
   const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent) => { if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false) }
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', close)
+    window.addEventListener('keydown', escape)
+    return () => { document.removeEventListener('pointerdown', close); window.removeEventListener('keydown', escape) }
+  }, [open])
   return (
-    <div className="quick-add-wrap">
-      <button className="primary-button" onClick={() => setOpen(!open)} aria-expanded={open}><Plus /> Add</button>
+    <div className="quick-add-wrap" ref={wrapRef}>
+      <button className="primary-button" onClick={() => setOpen(!open)} aria-expanded={open}><Plus /> Quick capture</button>
       {open && <div className="quick-add-menu">
         <button onClick={() => { onSelect('task'); setOpen(false) }}><Check /><span><strong>Task</strong><small>A clear next action</small></span></button>
         <button onClick={() => { onSelect('note'); setOpen(false) }}><NotebookPen /><span><strong>Note</strong><small>Project context or decision</small></span></button>
@@ -507,7 +556,12 @@ function OwnerChip({ owner }: { owner: Owner }) {
   return <span className="owner-chip" title={owner}>{ownerShort[owner]}</span>
 }
 
-function HomeView({ openProject, navigate }: { openProject: (id: string) => void; navigate: (view: ViewName) => void }) {
+function HomeView({ openProject, navigate, openEdit, openClient }: {
+  openProject: (id: string) => void
+  navigate: (view: ViewName) => void
+  openEdit: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void
+  openClient: (id: string) => void
+}) {
   const projects = useLiveQuery(() => db.projects.filter((p) => !p.archivedAt && p.status === 'active').toArray(), [], [])
   const milestones = useLiveQuery(() => db.milestones.filter((m) => !m.archivedAt).toArray(), [], [])
   const tasks = useLiveQuery(() => db.tasks.filter((t) => !t.archivedAt && t.status !== 'done').toArray(), [], [])
@@ -515,20 +569,19 @@ function HomeView({ openProject, navigate }: { openProject: (id: string) => void
   const allLeads = useLiveQuery(() => db.leads.filter((l) => !l.archivedAt).toArray(), [], [])
   const payments = useLiveQuery(() => db.payments.filter((p) => !p.archivedAt && p.status === 'due').toArray(), [], [])
   const meetingItems = useLiveQuery(() => db.meetingItems.filter((item) => !item.archivedAt && activeMeetingStatus(item.status)).toArray(), [], [])
-  const backups = useLiveQuery(() => db.backupExports.orderBy('exportedAt').reverse().toArray(), [], [])
 
   const dueFollowUps = leads.filter((lead) => lead.followUpDate && daysUntil(lead.followUpDate) <= 7).sort((a, b) => (a.followUpDate ?? '').localeCompare(b.followUpDate ?? '')).slice(0, 3)
-  const thisWeek = tasks.filter((task) => task.status === 'next' || task.status === 'in_progress').sort((a, b) => (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999')).slice(0, 6)
-  const backupAge = backups[0] ? daysSince(backups[0].exportedAt) : Infinity
-  const [backupReminderDismissedAt, setBackupReminderDismissedAt] = usePersistedState('impulse:backup-reminder-dismissed-at', '')
+  const nextTasks = tasks.filter((task) => task.status === 'next' || task.status === 'in_progress').sort((a, b) => (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999')).slice(0, 6)
   const [importPromptDismissed, setImportPromptDismissed] = usePersistedState('impulse:import-prompt-dismissed', false)
-  const backupReminderSnoozed = backupReminderDismissedAt ? daysSince(backupReminderDismissedAt) < 30 : false
 
   return <div className="page">
-    <PageHeader eyebrow="Today" title="What needs attention" description="Only active work and upcoming decisions." />
-    {backupAge >= 30 && !backupReminderSnoozed && <div className="gentle-banner"><Archive /><span><strong>Monthly backup is due.</strong> Export it from Settings when you have a quiet moment.</span><div className="banner-actions"><button className="banner-link" onClick={() => navigate('settings')}>Open settings</button><button className="notice-dismiss" aria-label="Dismiss monthly backup reminder for 30 days" onClick={() => setBackupReminderDismissedAt(nowIso())}><X /></button></div></div>}
+    <PageHeader eyebrow="Today" title="What needs your attention" description="Overdue work, blockers and the next actions that move projects forward." />
     <section className="attention-list" aria-label="Active projects">
-      {projects.sort((a, b) => a.order - b.order).map((project) => {
+      {projects.sort((a, b) => {
+        const hasWaiting = (project: Project) => tasks.some((task) => task.projectId === project.id && task.status === 'waiting')
+        const hasOverdue = (project: Project) => tasks.some((task) => task.projectId === project.id && task.status !== 'done' && isOverdue(task.dueDate))
+        return Number(hasWaiting(b)) - Number(hasWaiting(a)) || Number(hasOverdue(b)) - Number(hasOverdue(a)) || a.order - b.order
+      }).map((project) => {
         const projectMilestones = milestones.filter((m) => m.projectId === project.id).sort((a, b) => a.position - b.position)
         const doneCount = projectMilestones.filter((m) => m.status === 'done').length
         const openMilestones = projectMilestones.filter((m) => m.status !== 'done')
@@ -543,31 +596,32 @@ function HomeView({ openProject, navigate }: { openProject: (id: string) => void
           <span><small>Next step</small>{nextMilestone?.title ?? (projectMilestones.length ? 'Plan complete' : 'Set the next step')}</span>
           <span><small>Next deliverable</small>{nextDeliverable?.title ?? 'Mark a step as deliverable'}{nextDeliverable?.dueDate && <em className={isOverdue(nextDeliverable.dueDate) ? 'overdue' : ''}>{formatDate(nextDeliverable.dueDate)}</em>}</span>
           <span className={blocker ? 'has-blocker' : 'clear'}><small>{blocker ? 'Waiting' : 'Status'}</small>{blocker?.title ?? 'No blocker recorded'}</span>
+          <span className={`attention-mobile ${blocker ? 'has-blocker' : ''}`}>{blocker ? `Waiting: ${blocker.title}` : nextMilestone ? `Next: ${nextMilestone.title}` : 'Plan complete'}</span>
           <ChevronRight />
         </button>
       })}
       {!projects.length && !importPromptDismissed && <div className="first-run-card"><button className="notice-dismiss" aria-label="Dismiss import reminder" onClick={() => setImportPromptDismissed(true)}><X /></button><p className="eyebrow">First setup</p><h2>Bring in your Command Center</h2><p>Your private client data is kept outside the public app build. Import the prepared local file once, then continue here.</p><ol><li>Open Settings</li><li>Choose the Command Center import file</li><li>Review the three project overviews</li></ol><button className="primary-button" onClick={() => navigate('settings')}>Open settings</button></div>}
     </section>
 
-    <UpcomingDeadlines projects={projects} milestones={milestones} tasks={tasks} leads={leads} payments={payments} allLeads={allLeads} />
+    <UpcomingDeadlines projects={projects} milestones={milestones} tasks={tasks} leads={leads} payments={payments} allLeads={allLeads} openEdit={openEdit} openClient={openClient} />
 
     <div className="home-lower">
       <section>
-        <SectionTitle title="This week" action={<button onClick={() => navigate('projects')}>View projects</button>} />
+        <SectionTitle title="Next tasks" action={<button onClick={() => navigate('projects')}>View projects</button>} />
         <div className="simple-list">
-          {thisWeek.length ? thisWeek.map((task) => <TaskLine key={task.id} task={task} project={projects.find((p) => p.id === task.projectId)} />) : <EmptyState text="Nothing planned for this week yet." />}
+          {nextTasks.length ? nextTasks.map((task) => <TaskLine key={task.id} task={task} project={projects.find((p) => p.id === task.projectId)} onOpen={() => openEdit('task', task.projectId, task.id)} />) : <EmptyState text="No next tasks yet." />}
         </div>
       </section>
       <section>
         <SectionTitle title="Client follow-ups" action={<button onClick={() => navigate('sales')}>View all</button>} />
         <div className="simple-list">
-          {dueFollowUps.length ? dueFollowUps.map((lead) => <div className="list-row" key={lead.id}><span><strong>{lead.business}</strong><small>{lead.nextAction || 'Set a next action'}</small></span><time className={isOverdue(lead.followUpDate) ? 'overdue' : ''}>{formatDate(lead.followUpDate)}</time></div>) : <EmptyState text="No follow-ups due in the next seven days." />}
+          {dueFollowUps.length ? dueFollowUps.map((lead) => <div className="list-row is-actionable" key={lead.id}><span><button className="row-main" onClick={() => openClient(lead.id)}><strong>{lead.business}</strong><small>{lead.nextAction || 'Set a next action'}</small></button></span><time className={isOverdue(lead.followUpDate) ? 'overdue' : ''}>{formatDate(lead.followUpDate)}</time><ChevronRight /></div>) : <EmptyState text="No follow-ups due in the next seven days." />}
         </div>
       </section>
       <section>
-        <SectionTitle title="Next meeting" action={<button onClick={() => navigate('meeting')}>View all</button>} />
+        <SectionTitle title="Meeting agenda" action={<button onClick={() => navigate('meeting')}>View all</button>} />
         <div className="simple-list">
-          {meetingItems.slice(0, 3).map((item) => <div className="list-row" key={item.id}><span><strong>{item.title}</strong><small>{projects.find((p) => p.id === item.projectId)?.name}</small></span></div>)}
+          {meetingItems.slice(0, 3).map((item) => <div className="list-row is-actionable" key={item.id}><span><button className="row-main" onClick={() => openEdit('discussion', item.projectId, item.id)}><strong>{item.title}</strong><small>{projects.find((p) => p.id === item.projectId)?.name}</small></button></span><ChevronRight /></div>)}
           {!meetingItems.length && <EmptyState text="No unresolved topics." />}
         </div>
       </section>
@@ -575,15 +629,17 @@ function HomeView({ openProject, navigate }: { openProject: (id: string) => void
   </div>
 }
 
-function UpcomingDeadlines({ projects, milestones, tasks, leads, payments, allLeads }: {
+function UpcomingDeadlines({ projects, milestones, tasks, leads, payments, allLeads, openEdit, openClient }: {
   projects: Project[]; milestones: Milestone[]; tasks: Task[]; leads: Lead[]; payments: Payment[]; allLeads: Lead[]
+  openEdit: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void
+  openClient: (id: string) => void
 }) {
   const businessOf = (leadId: string) => allLeads.find((l) => l.id === leadId)?.business ?? 'Client'
   const items = [
-    ...milestones.filter((m) => m.dueDate && m.status !== 'done').map((m) => ({ id: m.id, date: m.dueDate!, kind: m.deliverable ? 'Deliverable' : 'Step', title: m.title, projectId: m.projectId as string | undefined, money: false })),
-    ...tasks.filter((t) => t.dueDate).map((t) => ({ id: t.id, date: t.dueDate!, kind: 'Task', title: t.title, projectId: t.projectId as string | undefined, money: false })),
-    ...leads.filter((l) => l.followUpDate).map((l) => ({ id: l.id, date: l.followUpDate!, kind: 'Follow-up', title: l.business, projectId: undefined as string | undefined, money: false })),
-    ...payments.filter((p) => p.dueDate).map((p) => ({ id: p.id, date: p.dueDate!, kind: p.kind === 'retainer' ? 'Retainer' : 'Payment', title: `${businessOf(p.leadId)} · ${p.amount ? formatMoney(p.amount) : p.label}`, projectId: undefined as string | undefined, money: true }))
+    ...milestones.filter((m) => m.dueDate && m.status !== 'done').map((m) => ({ id: m.id, date: m.dueDate!, kind: m.deliverable ? 'Deliverable' : 'Step', title: m.title, projectId: m.projectId as string | undefined, money: false, open: () => openEdit(m.deliverable ? 'deliverable' : 'milestone', m.projectId, m.id) })),
+    ...tasks.filter((t) => t.dueDate && t.status !== 'done').map((t) => ({ id: t.id, date: t.dueDate!, kind: 'Task', title: t.title, projectId: t.projectId as string | undefined, money: false, open: () => openEdit('task', t.projectId, t.id) })),
+    ...leads.filter((l) => l.followUpDate).map((l) => ({ id: l.id, date: l.followUpDate!, kind: 'Follow-up', title: l.business, projectId: undefined as string | undefined, money: false, open: () => openClient(l.id) })),
+    ...payments.filter((p) => p.dueDate).map((p) => ({ id: p.id, date: p.dueDate!, kind: p.kind === 'retainer' ? 'Retainer' : 'Payment', title: `${businessOf(p.leadId)} · ${p.amount ? formatMoney(p.amount) : p.label}`, projectId: undefined as string | undefined, money: true, open: () => openClient(p.leadId) }))
   ].filter((item) => daysUntil(item.date) <= 14).sort((a, b) => a.date.localeCompare(b.date))
 
   return <section className="deadline-strip" aria-label="Deadlines in the next two weeks">
@@ -592,20 +648,21 @@ function UpcomingDeadlines({ projects, milestones, tasks, leads, payments, allLe
       {items.map((item) => {
         const project = projects.find((p) => p.id === item.projectId)
         const late = isOverdue(item.date)
-        return <div className="deadline-row" key={`${item.kind}-${item.id}`}>
+        return <button className="deadline-row" key={`${item.kind}-${item.id}`} onClick={item.open} aria-label={`Open ${item.kind.toLowerCase()} ${item.title}`}>
           <span className={`deadline-date ${late ? 'overdue' : ''}`}>{formatDate(item.date)}{late ? ' · late' : ''}</span>
           <span className={`deadline-kind ${item.money ? 'is-money' : ''}`}>{item.kind}</span>
           <span className="deadline-title">{item.title}</span>
           <span className="deadline-project">{project ? <><span className="project-dot" style={{ background: project.color }} />{project.name}</> : item.money ? 'Money' : 'Clients'}</span>
-        </div>
+          <ChevronRight />
+        </button>
       })}
       {!items.length && <EmptyState text="No dated work in the next two weeks. Give plan steps a deadline to see them here." />}
     </div>
   </section>
 }
 
-function TaskLine({ task, project }: { task: Task; project?: Project }) {
-  return <div className="list-row"><span className={`status-dot status-${task.status}`} /><OwnerChip owner={task.owner} /><span><strong>{task.title}</strong><small>{project?.name} · {taskStatusLabels[task.status]}</small></span>{task.dueDate && <time className={isOverdue(task.dueDate) ? 'overdue' : ''}>{formatDate(task.dueDate)}</time>}</div>
+function TaskLine({ task, project, onOpen }: { task: Task; project?: Project; onOpen?: () => void }) {
+  return <div className={`list-row ${onOpen ? 'is-actionable' : ''}`}><span className={`status-dot status-${task.status}`} /><OwnerChip owner={task.owner} /><span>{onOpen ? <button className="row-main" onClick={onOpen}><strong>{task.title}</strong><small>{project ? `${project.name} · ` : ''}{taskStatusLabels[task.status]}</small></button> : <><strong>{task.title}</strong><small>{project ? `${project.name} · ` : ''}{taskStatusLabels[task.status]}</small></>}</span>{task.dueDate && <time className={isOverdue(task.dueDate) ? 'overdue' : ''}>{formatDate(task.dueDate)}</time>}{onOpen && <ChevronRight />}</div>
 }
 
 function SectionTitle({ title, action }: { title: string; action?: React.ReactNode }) {
@@ -616,17 +673,17 @@ function EmptyState({ text, action }: { text: string; action?: React.ReactNode }
   return <div className="empty-state"><p>{text}</p>{action}</div>
 }
 
-function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, openAdd, openProjectEdit, setToast }: {
+function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, openAdd, openProjectEdit, openClient, setToast }: {
   selectedProjectId: string; setSelectedProjectId: (id: string) => void; tab: ProjectTab; setTab: (tab: ProjectTab) => void;
-  openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openProjectEdit: (id: string) => void; setToast: (toast: ToastState) => void
+  openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openProjectEdit: (id: string) => void; openClient: (id: string) => void; setToast: (toast: ToastState) => void
 }) {
   const projects = useLiveQuery(() => db.projects.filter((p) => !p.archivedAt && p.status !== 'archived').toArray(), [], [])
   const project = projects.find((item) => item.id === selectedProjectId) ?? projects[0]
   if (!project) return <div className="page"><EmptyState text="No projects yet. Add one from the sidebar." /></div>
-  const tabLabels: Record<ProjectTab, string> = { overview: 'Overview', plan: 'Plan', board: 'Board', notes: 'Notes', links: 'Links' }
+  const tabLabels: Record<ProjectTab, string> = { overview: 'Overview', plan: 'Plan', board: 'Tasks', notes: 'Notes', links: 'Files & links' }
   return <div className="page">
     <div className="project-switcher">
-      {projects.sort((a, b) => a.order - b.order).map((item) => <button key={item.id} className={item.id === project.id ? 'active' : ''} onClick={() => { setSelectedProjectId(item.id); setTab('overview') }}><span style={{ background: item.color }} />{item.name}</button>)}
+      {projects.sort((a, b) => a.order - b.order).map((item) => <button key={item.id} className={item.id === project.id ? 'active' : ''} onClick={() => { setSelectedProjectId(item.id); setTab('overview'); window.scrollTo({ top: 0 }) }}><span style={{ background: item.color }} />{item.name}</button>)}
     </div>
     <div className="project-heading">
       <div><p className="eyebrow">{project.clientType === 'internal' ? 'Internal project' : 'Client project'} · {project.phase}</p><h1>{project.name}</h1><p>{project.currentFocus}</p></div>
@@ -638,31 +695,33 @@ function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, op
     <nav className="subnav" aria-label="Project sections">
       {(Object.keys(tabLabels) as ProjectTab[]).map((item) => <button key={item} onClick={() => setTab(item)} className={tab === item ? 'active' : ''}>{tabLabels[item]}</button>)}
     </nav>
-    {tab === 'overview' && <ProjectOverview project={project} openAdd={openAdd} />}
+    {tab === 'overview' && <ProjectOverview project={project} openAdd={openAdd} openClient={openClient} />}
     {tab === 'plan' && <PlanView project={project} openAdd={openAdd} setToast={setToast} />}
     {tab === 'board' && <BoardView project={project} openAdd={openAdd} setToast={setToast} />}
-    {tab === 'notes' && <NotesView project={project} openAdd={openAdd} />}
+    {tab === 'notes' && <NotesView project={project} openAdd={openAdd} setToast={setToast} />}
     {tab === 'links' && <LinksView project={project} openAdd={openAdd} />}
   </div>
 }
 
-function ProjectOverview({ project, openAdd }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void }) {
+function ProjectOverview({ project, openAdd, openClient }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openClient: (id: string) => void }) {
   const milestones = useLiveQuery(() => db.milestones.where('projectId').equals(project.id).filter((m) => !m.archivedAt).sortBy('position'), [project.id], [])
   const tasks = useLiveQuery(() => db.tasks.where('projectId').equals(project.id).filter((t) => !t.archivedAt && t.status !== 'done').toArray(), [project.id], [])
   const meetingItems = useLiveQuery(() => db.meetingItems.where('projectId').equals(project.id).filter((m) => !m.archivedAt && activeMeetingStatus(m.status)).toArray(), [project.id], [])
   const deliverables = milestones.filter((m) => m.deliverable && m.status !== 'done')
   const doneCount = milestones.filter((m) => m.status === 'done').length
+  const client = useLiveQuery(() => project.clientId ? db.leads.get(project.clientId) : undefined, [project.clientId])
+  const clientPayments = useLiveQuery(() => project.clientId ? db.payments.where('leadId').equals(project.clientId).filter((payment) => !payment.archivedAt).toArray() : [], [project.clientId], [])
   return <div className="project-overview">
-    <section className="goal-panel"><p className="eyebrow">Project goal</p><h2>{project.goal}</h2>{project.targetDate && <span><CalendarDays /> Target {fullDate(project.targetDate)}</span>}{milestones.length > 0 && <span><Check /> {doneCount} of {milestones.length} steps done</span>}</section>
+    <section className="goal-panel"><p className="eyebrow">Project goal</p><h2>{project.goal}</h2>{client && <button className="project-client-link" onClick={() => openClient(client.id)}><Users /> {client.business}{clientPayments.length ? ` · ${formatMoney(sumReceived(clientPayments)) || '₽0'} received${sumDue(clientPayments) ? ` · ${formatMoney(sumDue(clientPayments))} due` : ''}` : ''}<ChevronRight /></button>}{project.targetDate && <span><CalendarDays /> Target {fullDate(project.targetDate)}</span>}{milestones.length > 0 && <span><Check /> {doneCount} of {milestones.length} steps done</span>}</section>
     <section className="overview-section">
       <SectionTitle title="Plan" action={<button onClick={() => openAdd('milestone', project.id)}><Plus /> Add step</button>} />
       <div className="milestone-path">{milestones.slice(0, 8).map((milestone, index) => <div key={milestone.id} className={`milestone-step ${milestone.status}`}><span>{milestone.status === 'done' ? <Check /> : index + 1}</span><p>{milestone.deliverable && <Star className="step-star" aria-label="Client deliverable" />}{milestone.title}</p></div>)}</div>
       {!milestones.length && <EmptyState text="No plan yet. Add the first step." />}
     </section>
     <div className="overview-grid">
-      <section><SectionTitle title="Next deliverables" action={<button onClick={() => openAdd('deliverable', project.id)}><Plus /> Add</button>} /><div className="simple-list">{deliverables.slice(0, 3).map((item) => <div className="list-row" key={item.id}><FileCheck2 /><span><strong>{item.title}</strong><small>{milestoneStatusLabels[item.status]} · {item.owner}</small></span>{item.dueDate && <time>{formatDate(item.dueDate)}</time>}</div>)}{!deliverables.length && <EmptyState text="Mark plan steps the client receives as deliverables." />}</div></section>
-      <section><SectionTitle title="Current tasks" action={<button onClick={() => openAdd('task', project.id)}><Plus /> Add</button>} /><div className="simple-list">{tasks.slice(0, 4).map((task) => <TaskLine key={task.id} task={task} />)}{!tasks.length && <EmptyState text="No active tasks." />}</div></section>
-      <section><SectionTitle title="For next meeting" action={<button onClick={() => openAdd('discussion', project.id)}><Plus /> Add</button>} /><div className="simple-list">{meetingItems.slice(0, 3).map((item) => <div className="list-row" key={item.id}><MessageSquareText /><span><strong>{item.title}</strong><small>{meetingStatusLabels[item.status]}</small></span></div>)}{!meetingItems.length && <EmptyState text="Nothing waiting for the next meeting." />}</div></section>
+      <section><SectionTitle title="Next deliverables" action={<button onClick={() => openAdd('deliverable', project.id)}><Plus /> Add</button>} /><div className="simple-list">{deliverables.slice(0, 3).map((item) => <div className="list-row is-actionable" key={item.id}><FileCheck2 /><span><button className="row-main" onClick={() => openAdd('deliverable', project.id, item.id)}><strong>{item.title}</strong><small>{milestoneStatusLabels[item.status]} · {item.owner}</small></button></span>{item.dueDate && <time>{formatDate(item.dueDate)}</time>}<ChevronRight /></div>)}{!deliverables.length && <EmptyState text="Mark plan steps the client receives as deliverables." />}</div></section>
+      <section><SectionTitle title="Current tasks" action={<button onClick={() => openAdd('task', project.id)}><Plus /> Add</button>} /><div className="simple-list">{tasks.slice(0, 4).map((task) => <TaskLine key={task.id} task={task} onOpen={() => openAdd('task', project.id, task.id)} />)}{!tasks.length && <EmptyState text="No active tasks." />}</div></section>
+      <section><SectionTitle title="Meeting agenda" action={<button onClick={() => openAdd('discussion', project.id)}><Plus /> Add</button>} /><div className="simple-list">{meetingItems.slice(0, 3).map((item) => <div className="list-row is-actionable" key={item.id}><MessageSquareText /><span><button className="row-main" onClick={() => openAdd('discussion', project.id, item.id)}><strong>{item.title}</strong><small>{meetingStatusLabels[item.status]}</small></button></span><ChevronRight /></div>)}{!meetingItems.length && <EmptyState text="Nothing waiting for the meeting." />}</div></section>
     </div>
   </div>
 }
@@ -696,15 +755,25 @@ function BoardView({ project, openAdd, setToast }: { project: Project; openAdd: 
     const archivedAt = nowIso(); await db.tasks.update(task.id, { archivedAt, updatedAt: archivedAt })
     setToast({ message: 'Task archived.', action: { label: 'Undo', run: () => db.tasks.update(task.id, { archivedAt: undefined, updatedAt: nowIso() }) } })
   }
-  return <section><SectionTitle title="Board" action={<button className="primary-button" onClick={() => openAdd('task', project.id)}><Plus /> Add task</button>} />
-    <div className="task-board">{taskStatuses.map((status) => <div className="task-column" key={status}><div className="column-heading"><h3>{taskStatusLabels[status]}</h3><span>{tasks.filter((t) => t.status === status).length}</span></div>{tasks.filter((t) => t.status === status).sort((a, b) => a.position - b.position).map((task) => <article className="task-card" key={task.id}><div><span className={`priority priority-${task.priority}`}>{task.priority}</span>{task.dueDate && <time className={isOverdue(task.dueDate) && status !== 'done' ? 'overdue' : ''}>{formatDate(task.dueDate)}</time>}</div><button className="card-title" onClick={() => openAdd('task', project.id, task.id)}><h4>{task.title}</h4></button><p>{task.owner}</p><div className="card-actions"><StatusSelect value={task.status} options={taskStatuses} labels={taskStatusLabels} onChange={(value) => move(task, value as TaskStatus)} compact /><button aria-label={`Archive ${task.title}`} onClick={() => archiveTask(task)}><Archive /></button></div></article>)}</div>)}</div>
+  const activeStatuses: TaskStatus[] = ['next', 'in_progress', 'waiting', 'backlog']
+  const done = tasks.filter((task) => task.status === 'done').sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  const taskCard = (task: Task, status: TaskStatus) => <article className="task-card" key={task.id}><div><span className={`priority priority-${task.priority}`}>{task.priority}</span>{task.dueDate && <time className={isOverdue(task.dueDate) && status !== 'done' ? 'overdue' : ''}>{formatDate(task.dueDate)}</time>}</div><button className="card-title" onClick={() => openAdd('task', project.id, task.id)}><h4>{task.title}</h4></button><p>{task.owner}</p><div className="card-actions"><StatusSelect value={task.status} options={taskStatuses} labels={taskStatusLabels} onChange={(value) => move(task, value as TaskStatus)} compact /><button aria-label={`Archive ${task.title}`} onClick={() => archiveTask(task)}><Archive /></button></div></article>
+  return <section><SectionTitle title="Tasks" action={<button className="primary-button" onClick={() => openAdd('task', project.id)}><Plus /> Add task</button>} />
+    <div className="task-board">{activeStatuses.map((status) => <div className="task-column" key={status}><div className="column-heading"><h3>{taskStatusLabels[status]}</h3><span>{tasks.filter((t) => t.status === status).length}</span></div>{tasks.filter((t) => t.status === status).sort((a, b) => a.position - b.position).map((task) => taskCard(task, status))}</div>)}</div>
+    {done.length > 0 && <details className="completed-tasks"><summary>{done.length} completed {done.length === 1 ? 'task' : 'tasks'}</summary><div className="completed-task-grid">{done.slice(0, 20).map((task) => taskCard(task, 'done'))}</div></details>}
   </section>
 }
 
-function NotesView({ project, openAdd }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void }) {
+function NotesView({ project, openAdd, setToast }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; setToast: (toast: ToastState) => void }) {
   const notes = useLiveQuery(() => db.notes.where('projectId').equals(project.id).filter((n) => !n.archivedAt).reverse().sortBy('createdAt'), [project.id], [])
   const items = useLiveQuery(() => db.meetingItems.where('projectId').equals(project.id).filter((m) => !m.archivedAt && activeMeetingStatus(m.status)).toArray(), [project.id], [])
-  return <div className="notes-layout"><section><SectionTitle title="Notes, decisions & ideas" action={<button className="primary-button" onClick={() => openAdd('note', project.id)}><Plus /> Add note</button>} />{notes.map((note) => <article className="note-entry" key={note.id}><div><span className={`note-kind ${note.kind}`}>{note.kind}</span><time>{new Date(note.createdAt).toLocaleDateString('en-GB')}</time></div><button className="row-main" onClick={() => openAdd('note', project.id, note.id)}><h3>{note.title}</h3></button><p>{note.body}</p><small>{note.author}</small></article>)}{!notes.length && <EmptyState text="Add context, a decision, or something worth remembering." />}</section><section><SectionTitle title="For next meeting" action={<button onClick={() => openAdd('discussion', project.id)}><Plus /> Add</button>} /><div className="simple-list">{items.map((item) => <div className="list-row" key={item.id}><MessageSquareText /><span><strong>{item.title}</strong><small>{meetingStatusLabels[item.status]}</small></span></div>)}{!items.length && <EmptyState text="Nothing waiting for the next meeting." />}</div></section></div>
+  const useIdea = async (idea: Note, target: 'meeting' | 'task') => {
+    const stamp = nowIso()
+    if (target === 'meeting') await db.meetingItems.add({ id: newId('meetingItems', 'agenda'), realmId: recordRealmId(), projectId: project.id, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'open', owner: idea.author, createdAt: stamp, updatedAt: stamp, createdBy: idea.author })
+    else await db.tasks.add({ id: newId('tasks', 'task'), realmId: recordRealmId(), projectId: project.id, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'next', priority: 'normal', owner: idea.author, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: idea.author })
+    setToast({ message: target === 'meeting' ? 'Added to the meeting agenda. The idea is still here.' : 'Task created. The idea is still here.' })
+  }
+  return <div className="notes-layout"><section><SectionTitle title="Notes, decisions & ideas" action={<button className="primary-button" onClick={() => openAdd('note', project.id)}><Plus /> Add note</button>} />{notes.map((note) => <article className="note-entry" key={note.id}><div><span className={`note-kind ${note.kind}`}>{note.kind}</span><time>{new Date(note.createdAt).toLocaleDateString('en-GB')}</time></div><button className="row-main" onClick={() => openAdd('note', project.id, note.id)}><h3>{note.title}</h3></button><p>{note.body}</p><footer><small>{note.author}</small>{note.kind === 'idea' && <span className="idea-actions"><button onClick={() => useIdea(note, 'meeting')}>Add to meeting</button><button onClick={() => useIdea(note, 'task')}>Create task</button></span>}</footer></article>)}{!notes.length && <EmptyState text="Add context, a decision, or something worth remembering." />}</section><section><SectionTitle title="Meeting agenda" action={<button onClick={() => openAdd('discussion', project.id)}><Plus /> Add</button>} /><div className="simple-list">{items.map((item) => <div className="list-row is-actionable" key={item.id}><MessageSquareText /><span><button className="row-main" onClick={() => openAdd('discussion', project.id, item.id)}><strong>{item.title}</strong><small>{meetingStatusLabels[item.status]}</small></button></span><ChevronRight /></div>)}{!items.length && <EmptyState text="Nothing waiting for the meeting." />}</div></section></div>
 }
 
 function LinksView({ project, openAdd }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void }) {
@@ -756,8 +825,8 @@ function ClientsView({ addLead, openModal }: { addLead: () => void; openModal: (
 
   useEffect(() => setVisibleCount(clientListBatchSize), [stageFilter, serviceFilter, query])
 
-  return <div className="page"><PageHeader eyebrow="Outreach" title="Clients & Money"
-    description="A focused view of the pipeline, follow-ups and cash — even when the list gets long."
+  return <div className="page"><PageHeader eyebrow="Sales & relationships" title="Clients"
+    description="Keep every conversation moving with a clear next action, follow-up and payment picture."
     action={<button className="primary-button" onClick={addLead}><Plus /> Add client</button>} />
     <section className="client-summary" aria-label="Client pipeline summary">
       <div><span>Active pipeline</span><strong>{activeLeads.length}</strong><small>of {leads.length} total clients</small></div>
@@ -790,7 +859,7 @@ function ClientsView({ addLead, openModal }: { addLead: () => void; openModal: (
         const moneyLabel = received ? 'received' : lead.quoted ? 'quoted' : due ? 'due' : 'No value yet'
         return <button className="client-row" key={lead.id} onClick={() => openModal(lead.id)} aria-label={`Edit ${lead.business}`}>
           <span className="client-identity"><strong>{lead.business}</strong><small>{lead.owner}{service ? ` · ${service}` : ''}</small></span>
-          <span className="client-stage-cell"><span className={`client-stage stage-${group?.key ?? 'lead'}`}>{group?.label ?? 'Lead'}</span></span>
+          <span className="client-stage-cell"><span className={`client-stage stage-${lead.stage}`}>{leadStageLabels[lead.stage]}</span></span>
           <span className="client-next">{lead.nextAction || 'Set a next action'}</span>
           <span className="client-followup">{lead.followUpDate ? <><time className={isOverdue(lead.followUpDate) ? 'overdue' : ''}>{formatDate(lead.followUpDate)}</time>{isOverdue(lead.followUpDate) && <small>Overdue</small>}</> : <small>No date</small>}</span>
           <span className="client-money"><strong>{moneyValue ? formatMoney(moneyValue) : '—'}</strong><small>{moneyLabel}{due > 0 && moneyLabel !== 'due' ? ` · ${formatMoney(due)} due` : ''}</small></span>
@@ -810,8 +879,8 @@ function AgendaNotes({ value, onChange, onCommit }: { value: string; onChange: (
 function MeetingView({ currentUser, setToast, openProject, openEdit }: { currentUser: Owner; setToast: (toast: ToastState) => void; openProject: (id: string) => void; openEdit: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void }) {
   const projects = useLiveQuery(() => db.projects.filter((p) => !p.archivedAt).toArray(), [], [])
   const items = useLiveQuery(() => db.meetingItems.filter((m) => !m.archivedAt && activeMeetingStatus(m.status)).toArray(), [], [])
-  const ideas = useLiveQuery(() => db.notes.filter((n) => !n.archivedAt && n.kind === 'idea').reverse().sortBy('createdAt'), [], [])
   const decisions = useLiveQuery(() => db.notes.filter((n) => !n.archivedAt && n.kind === 'decision').reverse().sortBy('createdAt'), [], [])
+  const meetingTasks = useLiveQuery(() => db.tasks.filter((task) => !task.archivedAt && Boolean(task.sourceMeetingItemId)).toArray(), [], [])
   // Notes typed live while talking. Kept in state (not just written on blur) so
   // resolving a topic can never race the autosave and drop what was just typed.
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -827,61 +896,43 @@ function MeetingView({ currentUser, setToast, openProject, openEdit }: { current
     const stamp = nowIso()
     try {
       const tables = status === 'action' ? [db.meetingItems, db.tasks] : status === 'decision' ? [db.meetingItems, db.notes] : [db.meetingItems]
+      let createdId: string | undefined
       await db.transaction('rw', tables, async () => {
-        await db.meetingItems.update(item.id, { status, notes: liveNotes || undefined, updatedAt: stamp, updatedBy: currentUser })
+        await db.meetingItems.update(item.id, { status, notes: liveNotes || undefined, archivedAt: status === 'closed' ? stamp : undefined, updatedAt: stamp, updatedBy: currentUser })
         if (status === 'action') {
-          await db.tasks.add({ id: newId('tasks', 'task'), realmId: recordRealmId(), projectId: item.projectId, title: item.title, owner: item.owner || currentUser, status: 'next', priority: 'normal', dueDate: item.dueDate, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: currentUser, notes: liveNotes ? `From the partner meeting: ${liveNotes}` : 'From the partner meeting.' })
+          createdId = newId('tasks', 'task')
+          await db.tasks.add({ id: createdId, realmId: recordRealmId(), projectId: item.projectId, title: item.title, owner: item.owner || currentUser, status: 'next', priority: 'normal', dueDate: item.dueDate, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: currentUser, notes: liveNotes ? `From the meeting: ${liveNotes}` : 'From the meeting.', sourceMeetingItemId: item.id })
         } else if (status === 'decision') {
-          await db.notes.add({ id: newId('notes', 'note'), realmId: recordRealmId(), projectId: item.projectId, title: item.title, body: liveNotes || 'Agreed in the partner meeting.', kind: 'decision', author: currentUser, createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
+          createdId = newId('notes', 'note')
+          await db.notes.add({ id: createdId, realmId: recordRealmId(), projectId: item.projectId, title: item.title, body: liveNotes || 'Agreed in the meeting.', kind: 'decision', author: currentUser, createdAt: stamp, updatedAt: stamp, createdBy: currentUser, sourceMeetingItemId: item.id })
         }
       })
-      setToast({ message: status === 'action' ? 'Added to the project board for this week.' : status === 'decision' ? 'Decision saved to the project notes.' : status === 'deferred' ? 'Topic will roll into the next meeting.' : 'Topic closed.' })
+      const undo = async () => {
+        const undoTables = status === 'action' ? [db.meetingItems, db.tasks] : status === 'decision' ? [db.meetingItems, db.notes] : [db.meetingItems]
+        await db.transaction('rw', undoTables, async () => {
+          await db.meetingItems.update(item.id, { status: 'open', archivedAt: undefined, updatedAt: nowIso() })
+          if (createdId && status === 'action') await db.tasks.delete(createdId)
+          if (createdId && status === 'decision') await db.notes.delete(createdId)
+        })
+      }
+      setToast({ message: status === 'action' ? 'Task created in To do.' : status === 'decision' ? 'Decision saved to project notes.' : 'Topic closed.', action: { label: 'Undo', run: undo } })
       setDrafts((prev) => { const next = { ...prev }; delete next[item.id]; return next })
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : 'Could not resolve this topic.' })
     }
   }
 
-  const promoteIdea = async (idea: Note, to: 'agenda' | 'task') => {
-    const stamp = nowIso()
-    if (to === 'agenda') {
-      await db.meetingItems.add({ id: newId('meetingItems', 'agenda'), realmId: recordRealmId(), projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'open', owner: idea.author, createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
-      setToast({ message: 'Idea moved to the meeting agenda.' })
-    } else {
-      await db.tasks.add({ id: newId('tasks', 'task'), realmId: recordRealmId(), projectId: idea.projectId, title: idea.title, notes: idea.body !== idea.title ? idea.body : undefined, status: 'next', priority: 'normal', owner: idea.author, position: Date.now(), createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
-      setToast({ message: 'Idea turned into a task for this week.' })
-    }
-    await db.notes.update(idea.id, { archivedAt: stamp, updatedAt: stamp })
-  }
-
   const grouped = projects.map((project) => ({ project, items: items.filter((item) => item.projectId === project.id) })).filter((group) => group.items.length)
-  return <div className="page meeting-page"><PageHeader eyebrow="Partner meeting" title="Only unresolved topics" description="Jot notes while you talk. Decisions go to project notes, actions go to the board." />
-    {grouped.map(({ project, items: projectItems }) => <section className="meeting-group" key={project.id}><div className="meeting-project"><span className="project-dot" style={{ background: project.color }} /><button onClick={() => openProject(project.id)}>{project.name}<ChevronRight /></button><span>{projectItems.length} {projectItems.length === 1 ? 'topic' : 'topics'}</span></div>{projectItems.map((item) => <article className="agenda-card" key={item.id}><div><button className="row-main" onClick={() => openEdit('discussion', item.projectId, item.id)}><h3>{item.title}</h3></button><AgendaNotes value={noteFor(item)} onChange={(value) => setDrafts((prev) => ({ ...prev, [item.id]: value }))} onCommit={() => commitNote(item)} /><small>Added by {item.owner}</small></div><div className="agenda-actions"><button onClick={() => resolve(item, 'decision')}>Decision</button><button className="primary-button" onClick={() => resolve(item, 'action')}>Make it a task</button><button onClick={() => resolve(item, 'deferred')}>Next time</button><button aria-label="Close topic" onClick={() => resolve(item, 'closed')}><X /></button></div></article>)}</section>)}
-    {!grouped.length && <EmptyState text="Nothing unresolved. Your next meeting can stay short." />}
+  const outcomes = [
+    ...decisions.map((note) => ({ id: note.id, projectId: note.projectId, title: note.title, updatedAt: note.updatedAt, kind: 'Decision' as const, open: () => openEdit('note', note.projectId, note.id) })),
+    ...meetingTasks.map((task) => ({ id: task.id, projectId: task.projectId, title: task.title, updatedAt: task.updatedAt, kind: 'Task' as const, open: () => openEdit('task', task.projectId, task.id) }))
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8)
+  return <div className="page meeting-page"><PageHeader eyebrow="Work together" title="Meeting agenda" description="Discuss each topic, capture the outcome, and leave anything unresolved here for next time." action={<button className="primary-button" onClick={() => openEdit('discussion')}><Plus /> Add topic</button>} />
+    <SectionTitle title="To discuss" />
+    {grouped.map(({ project, items: projectItems }) => <section className="meeting-group" key={project.id}><div className="meeting-project"><span className="project-dot" style={{ background: project.color }} /><button onClick={() => openProject(project.id)}>{project.name}<ChevronRight /></button><span>{projectItems.length} {projectItems.length === 1 ? 'topic' : 'topics'}</span></div>{projectItems.map((item) => <article className="agenda-card" key={item.id}><div><button className="row-main" onClick={() => openEdit('discussion', item.projectId, item.id)}><h3>{item.title}</h3></button><AgendaNotes value={noteFor(item)} onChange={(value) => setDrafts((prev) => ({ ...prev, [item.id]: value }))} onCommit={() => commitNote(item)} /><small>Owner: {item.owner}</small></div><div className="agenda-actions"><button onClick={() => resolve(item, 'decision')}>Save decision</button><button className="primary-button" onClick={() => resolve(item, 'action')}>Create task</button><button className="close-topic" onClick={() => resolve(item, 'closed')}>Close topic</button></div></article>)}</section>)}
+    {!grouped.length && <EmptyState text="Nothing to discuss. Add a topic whenever something needs a conversation." action={<button className="primary-button" onClick={() => openEdit('discussion')}>Add a topic</button>} />}
 
-    <div className="meeting-lower">
-      <section>
-        <SectionTitle title="Parked ideas" action={<button onClick={() => openEdit('idea')}><Plus /> Add idea</button>} />
-        <div className="simple-list">
-          {ideas.map((idea) => <div className="list-row idea-row" key={idea.id}>
-            <Lightbulb />
-            <span><button className="row-main" onClick={() => openEdit('note', idea.projectId, idea.id)}><strong>{idea.title}</strong></button><small>{projects.find((p) => p.id === idea.projectId)?.name}{idea.body && idea.body !== idea.title ? ` · ${idea.body}` : ''}</small></span>
-            <span className="idea-actions"><button onClick={() => promoteIdea(idea, 'agenda')}>To agenda</button><button onClick={() => promoteIdea(idea, 'task')}>To task</button></span>
-          </div>)}
-          {!ideas.length && <EmptyState text="Park ideas here so they survive until the next meeting." />}
-        </div>
-      </section>
-      <section>
-        <SectionTitle title="Recent decisions" />
-        <div className="simple-list">
-          {decisions.slice(0, 5).map((note) => <div className="list-row" key={note.id}>
-            <Check />
-            <span><strong>{note.title}</strong><small>{projects.find((p) => p.id === note.projectId)?.name} · {new Date(note.createdAt).toLocaleDateString('en-GB')}</small></span>
-          </div>)}
-          {!decisions.length && <EmptyState text="Decisions you make in meetings will be listed here." />}
-        </div>
-      </section>
-    </div>
+    <section className="meeting-outcomes"><SectionTitle title="Recent outcomes" /><div className="simple-list">{outcomes.map((outcome) => <div className="list-row is-actionable" key={`${outcome.kind}-${outcome.id}`}><span className={`outcome-kind outcome-${outcome.kind.toLowerCase()}`}>{outcome.kind}</span><span><button className="row-main" onClick={outcome.open}><strong>{outcome.title}</strong><small>{projects.find((project) => project.id === outcome.projectId)?.name}</small></button></span><ChevronRight /></div>)}{!outcomes.length && <EmptyState text="Tasks and decisions created in meetings will stay visible here." />}</div></section>
   </div>
 }
 
@@ -894,43 +945,56 @@ function BackupStatus({ exportedAt, exportedBy }: { exportedAt: string; exported
   </p>
 }
 
-function SyncStatusLine({ phase, status, pending, error, byTable, realmId }: { phase?: string; status?: string; pending: number; error?: string; byTable?: string; realmId?: string }) {
-  // Temporary diagnostic detail appended while we chase a stuck-sync bug. `realm` shows the
-  // resolved workspace realm id: a real server-minted realm looks like "rlm" + random chars
-  // (no dash). "rlm-…" or a blank means realm creation didn't land — the root of the 403.
-  const diag = <span className="sync-diag"> · [{phase ?? '?'}/{status ?? '?'}{byTable ? ` · ${byTable}` : ''}{` · realm:${realmId ?? 'none'}`}{error ? ` · ${error}` : ''}]</span>
-  if (status === 'offline' || phase === 'offline') return <p className="sync-status sync-warn">Offline — changes save on this device and will sync once you're back online.{diag}</p>
-  if (status === 'error' || phase === 'error') return <p className="sync-status sync-error">Sync error — your latest changes may not have reached the server.{error ? ` Details: ${error}` : ' Try reloading the page.'}{diag}</p>
-  if (pending > 0) return <p className="sync-status sync-pending">{pending} change{pending === 1 ? '' : 's'} waiting to sync…{diag}</p>
+function SyncStatusLine({ phase, status, pending, error }: { phase?: string; status?: string; pending: number; error?: string }) {
+  if (status === 'offline' || phase === 'offline') return <p className="sync-status sync-warn">Offline — changes save on this device and will sync when you're back online.</p>
+  if (status === 'error' || phase === 'error') return <p className="sync-status sync-error">Sync needs attention.{error ? ` ${error}` : ' Reload the page and try again.'}</p>
+  if (pending > 0) return <p className="sync-status sync-pending">{pending} change{pending === 1 ? '' : 's'} waiting to sync…</p>
   if (phase === 'in-sync') return <p className="sync-status sync-ok">All changes synced.</p>
-  return <p className="sync-status">Checking sync status…{diag}</p>
+  return <p className="sync-status">Checking sync status…</p>
 }
 
-function ArchivedProjects({ setToast }: { setToast: (toast: ToastState) => void }) {
-  const projects = useLiveQuery(
-    () => db.projects.filter((project) => Boolean(project.archivedAt) || project.status === 'archived').toArray(),
-    [], []
-  ).sort((a, b) => (b.archivedAt ?? b.updatedAt).localeCompare(a.archivedAt ?? a.updatedAt))
+type ArchivedKind = 'projects' | 'milestones' | 'tasks' | 'notes' | 'meetingItems' | 'leads' | 'resources'
+interface ArchivedRow { id: string; kind: ArchivedKind; label: string; title: string; archivedAt: string; color?: string }
+
+function ArchivedItems({ setToast }: { setToast: (toast: ToastState) => void }) {
+  const rows = useLiveQuery(async () => {
+    const [projects, milestones, tasks, notes, meetingItems, leads, resources] = await Promise.all([
+      db.projects.filter((row) => Boolean(row.archivedAt) || row.status === 'archived').toArray(),
+      db.milestones.filter((row) => Boolean(row.archivedAt)).toArray(), db.tasks.filter((row) => Boolean(row.archivedAt)).toArray(),
+      db.notes.filter((row) => Boolean(row.archivedAt)).toArray(), db.meetingItems.filter((row) => Boolean(row.archivedAt)).toArray(),
+      db.leads.filter((row) => Boolean(row.archivedAt)).toArray(), db.resources.filter((row) => Boolean(row.archivedAt)).toArray()
+    ])
+    return [
+      ...projects.map((row) => ({ id: row.id, kind: 'projects' as const, label: 'Project', title: row.name, archivedAt: row.archivedAt ?? row.updatedAt, color: row.color })),
+      ...milestones.map((row) => ({ id: row.id, kind: 'milestones' as const, label: row.deliverable ? 'Deliverable' : 'Plan step', title: row.title, archivedAt: row.archivedAt! })),
+      ...tasks.map((row) => ({ id: row.id, kind: 'tasks' as const, label: 'Task', title: row.title, archivedAt: row.archivedAt! })),
+      ...notes.map((row) => ({ id: row.id, kind: 'notes' as const, label: row.kind === 'idea' ? 'Idea' : row.kind === 'decision' ? 'Decision' : 'Note', title: row.title, archivedAt: row.archivedAt! })),
+      ...meetingItems.map((row) => ({ id: row.id, kind: 'meetingItems' as const, label: 'Meeting topic', title: row.title, archivedAt: row.archivedAt! })),
+      ...leads.map((row) => ({ id: row.id, kind: 'leads' as const, label: 'Client', title: row.business, archivedAt: row.archivedAt! })),
+      ...resources.map((row) => ({ id: row.id, kind: 'resources' as const, label: 'Link', title: row.name, archivedAt: row.archivedAt! }))
+    ].sort((a, b) => b.archivedAt.localeCompare(a.archivedAt)) as ArchivedRow[]
+  }, [], [])
   const [workingId, setWorkingId] = useState<string | null>(null)
 
-  const restore = async (project: Project) => {
-    setWorkingId(project.id)
+  const restore = async (row: ArchivedRow) => {
+    setWorkingId(row.id)
     try {
-      await db.projects.update(project.id, { archivedAt: undefined, status: 'active', updatedAt: nowIso() })
-      setToast({ message: `${project.name} restored.` })
+      if (row.kind === 'projects') await db.projects.update(row.id, { archivedAt: undefined, status: 'active', updatedAt: nowIso() })
+      else await (db[row.kind] as any).update(row.id, { archivedAt: undefined, updatedAt: nowIso() })
+      setToast({ message: `${row.title} restored.` })
     } catch (error) {
-      setToast({ message: error instanceof Error ? error.message : 'Could not restore the project.' })
+      setToast({ message: error instanceof Error ? error.message : 'Could not restore this item.' })
     } finally {
       setWorkingId(null)
     }
   }
 
-  const remove = async (project: Project) => {
-    if (!window.confirm(`Permanently delete "${project.name}"? This removes its plan, tasks, notes, meeting items and links. This cannot be undone.`)) return
-    setWorkingId(project.id)
+  const removeProject = async (row: ArchivedRow) => {
+    if (!window.confirm(`Permanently delete "${row.title}" and all of its project records? This cannot be undone.`)) return
+    setWorkingId(row.id)
     try {
-      await deleteProjectPermanently(project.id)
-      setToast({ message: `${project.name} permanently deleted.` })
+      await deleteProjectPermanently(row.id)
+      setToast({ message: `${row.title} permanently deleted.` })
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : 'Could not delete the project.' })
     } finally {
@@ -939,28 +1003,28 @@ function ArchivedProjects({ setToast }: { setToast: (toast: ToastState) => void 
   }
 
   return <section className="settings-section">
-    <div><Archive /><span><h2>Archived projects</h2><p>Restore past work or permanently remove projects you no longer need.</p></span></div>
-    {projects.length ? <div className="archived-projects">{projects.map((project) => {
-      const working = workingId === project.id
-      return <div className="archived-project-row" key={project.id}>
-        <span className="project-dot" style={{ background: project.color }} />
-        <span><strong>{project.name}</strong><small>Archived {new Date(project.archivedAt ?? project.updatedAt).toLocaleDateString('en-GB')}</small></span>
+    <div><Archive /><span><h2>Recently archived</h2><p>Restore anything that was removed from daily views.</p></span></div>
+    {rows.length ? <div className="archived-projects">{rows.map((row) => {
+      const working = workingId === row.id
+      return <div className="archived-project-row" key={`${row.kind}-${row.id}`}>
+        <span className="project-dot" style={{ background: row.color ?? 'var(--subtle)' }} />
+        <span><strong>{row.title}</strong><small>{row.label} · archived {new Date(row.archivedAt).toLocaleDateString('en-GB')}</small></span>
         <div className="archived-project-actions">
-          <button className="secondary-button" onClick={() => restore(project)} disabled={working}><Repeat /> Restore</button>
-          <button className="danger-link" onClick={() => remove(project)} disabled={working}><Trash2 /> Delete permanently</button>
+          <button className="secondary-button" onClick={() => restore(row)} disabled={working}><Repeat /> Restore</button>
+          {row.kind === 'projects' && <button className="danger-link" onClick={() => removeProject(row)} disabled={working}><Trash2 /> Delete permanently</button>}
         </div>
       </div>
-    })}</div> : <p className="last-backup">No archived projects.</p>}
+    })}</div> : <p className="last-backup">Nothing is archived.</p>}
   </section>
 }
 
 function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToast }: { currentUser: Owner; isOwner: boolean; email?: string; realmId?: string; onSignOut: () => Promise<void>; setToast: (toast: ToastState) => void }) {
   const backups = useLiveQuery(() => db.backupExports.orderBy('exportedAt').reverse().toArray(), [], [])
+  const projectCount = useLiveQuery(() => db.projects.filter((project) => !project.archivedAt).count(), [], 0)
   const syncStatus = useSyncStatus()
   const [inviteEmail, setInviteEmail] = useState('')
   const [busy, setBusy] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
-  const login = async () => { try { await (db as any).cloud.login({ grant_type: 'otp' }) } catch (error) { setToast({ message: error instanceof Error ? error.message : 'Could not sign in.' }) } }
   const invite = async () => {
     if (!cloudEnabled) return setToast({ message: 'Connect Dexie Cloud before sending an invitation.' })
     if (!isOwner) return setToast({ message: 'Only the workspace owner can invite partners.' })
@@ -1000,13 +1064,15 @@ function SettingsView({ currentUser, isOwner, email, realmId, onSignOut, setToas
     try { await resetLocalData(); window.location.reload() }
     catch (error) { setBusy(false); setToast({ message: error instanceof Error ? error.message : 'Reset failed.' }) }
   }
-  return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="The technical details stay here, away from daily work." />
-    {cloudEnabled && <section className="settings-section"><div><LogOut /><span><h2>Account</h2><p>Signed in as {email ?? currentUser}{isOwner ? ' · workspace owner' : ''}. Log out on any shared or borrowed device.</p><SyncStatusLine {...syncStatus} realmId={realmId} /></span></div><button className="secondary-button" onClick={signOut} disabled={signingOut}><LogOut /> {signingOut ? 'Signing out…' : 'Log out'}</button></section>}
-    <section className="settings-section"><div><Upload /><span><h2>Command Center import</h2><p>Use the prepared private JSON file once. Existing records with the same IDs are updated, not duplicated.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Import private file</button>{cloudEnabled && <details className="reset-details"><summary>Import keeps failing?</summary><p>If a sync error keeps returning on every refresh, reset this device to clear local data stuck from an older version, then import again.</p><button className="danger-link" onClick={resetDevice} disabled={busy}><Trash2 /> Reset this device</button></details>}</section>
-    <ArchivedProjects setToast={setToast} />
-    <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner with their email address. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <div className="setup-callout"><strong>Cloud sync is not connected yet.</strong><p>Add your Dexie Cloud database URL to <code>VITE_DEXIE_CLOUD_URL</code>. The app is currently using this browser only.</p><button onClick={login} disabled={!cloudEnabled}>Connect after setup</button></div> : isOwner ? <><div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div><PartnerStatus ownEmail={email} realmId={realmId} /></> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
-    <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a human-readable workbook and place it in Google Drive.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : <p className="last-backup backup-stale">No backup exported yet.</p>}<details><summary>Monthly restoreable backup</summary><p>From this project folder, run <code>npx dexie-cloud export</code>. Store the resulting ZIP in Google Drive. Keep <code>dexie-cloud.key</code> private.</p></details></section>
+  const importSection = <section className="settings-section"><div><Upload /><span><h2>Import existing workspace</h2><p>Use the prepared private file to bring existing projects and clients into this workspace.</p></span></div><input ref={importInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => importInput.current?.click()} disabled={busy}><Upload /> Choose import file</button></section>
+  return <div className="page settings-page"><PageHeader eyebrow="Workspace" title="Settings" description="Manage your account, access, backups and archived work." />
+    {cloudEnabled && <section className="settings-section"><div><LogOut /><span><h2>Account</h2><p>Signed in as {email ?? currentUser}{isOwner ? ' · workspace owner' : ''}.</p><SyncStatusLine {...syncStatus} /></span></div><button className="secondary-button" onClick={signOut} disabled={signingOut}><LogOut /> {signingOut ? 'Signing out…' : 'Log out'}</button></section>}
+    {projectCount === 0 && importSection}
+    <section className="settings-section"><div><Users /><span><h2>Partner access</h2><p>Invite one trusted partner. Only the workspace owner can manage access.</p></span></div>{!cloudEnabled ? <p className="last-backup">This workspace currently saves on this browser only.</p> : isOwner ? <><div className="inline-form"><label><span>Partner email</span><input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="partner@example.com" /></label><button className="primary-button" onClick={invite}><UserPlus /> Invite</button></div><PartnerStatus ownEmail={email} realmId={realmId} /></> : <p className="last-backup">Ask the workspace owner to manage access.</p>}</section>
+    <section className="settings-section"><div><Download /><span><h2>Backup</h2><p>Export a readable workbook and store it somewhere safe.</p></span></div><button className="primary-button" onClick={exportBackup} disabled={busy}><Download /> {busy ? 'Creating…' : 'Export Excel backup'}</button>{backups[0] ? <BackupStatus exportedAt={backups[0].exportedAt} exportedBy={backups[0].exportedBy} /> : projectCount > 0 ? <p className="last-backup backup-stale">No backup exported yet.</p> : <p className="last-backup">Add or import work before creating a backup.</p>}</section>
+    <ArchivedItems setToast={setToast} />
     <section className="settings-section"><div><ExternalLink /><span><h2>Impulse website</h2><p>The public website remains separate from this private workspace.</p></span></div><a className="secondary-button" href="https://papertowel2030-hub.github.io/Impulse/" target="_blank" rel="noreferrer">Open website <ExternalLink /></a></section>
+    <details className="advanced-settings"><summary>Advanced & troubleshooting</summary><div className="advanced-settings-body">{projectCount > 0 && importSection}{!cloudEnabled && <section className="settings-section"><div><CloudOff /><span><h2>Cloud setup</h2><p>This development copy is using browser-only storage. Add the cloud database URL in the deployment configuration to enable shared sync.</p></span></div></section>}<section className="settings-section"><div><Download /><span><h2>Restoreable cloud backup</h2><p>For administrators: run <code>npx dexie-cloud export</code> from the project folder and keep the resulting ZIP and key private.</p></span></div></section>{cloudEnabled && <section className="settings-section"><div><Trash2 /><span><h2>Reset this device</h2><p>Use only when support asks you to clear a local sync problem. Synced records return after reload.</p></span></div><button className="danger-link" onClick={resetDevice} disabled={busy}><Trash2 /> Reset local copy</button></section>}</div></details>
   </div>
 }
 
@@ -1024,7 +1090,7 @@ function recordTable(kind: ModalKind) {
   return null
 }
 
-function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalState; currentUser: Owner; onClose: () => void; setToast: (toast: ToastState) => void }) {
+function EntryModal({ state, currentUser, onClose, setToast, createProjectForClient, openProject }: { state: ModalState; currentUser: Owner; onClose: () => void; setToast: (toast: ToastState) => void; createProjectForClient: (clientId: string) => void; openProject: (projectId: string) => void }) {
   const projects = useLiveQuery(() => db.projects.filter((p) => !p.archivedAt && p.status === 'active').toArray(), [], [])
   const kind = state.kind
   const isEdit = Boolean(state.recordId)
@@ -1032,6 +1098,9 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
     if (!state.recordId) return undefined
     return recordTable(kind)?.get(state.recordId)
   }, [state.recordId, kind])
+  const linkedProject = useLiveQuery(() => kind === 'lead' && state.recordId
+    ? db.projects.filter((project) => project.clientId === state.recordId && !project.archivedAt).first()
+    : undefined, [kind, state.recordId])
   const draftKey = `impulse:draft:${kind ?? 'none'}`
   const defaultProject = state.projectId ?? projects[0]?.id ?? ''
   const initial = useMemo(() => {
@@ -1049,18 +1118,21 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
   const [linkType, setLinkType] = useState(initial.linkType ?? '')
   const [tariff, setTariff] = useState(initial.tariff ?? '')
   const [quoted, setQuoted] = useState(initial.quoted ?? '')
+  const [contact, setContact] = useState(initial.contact ?? '')
+  const [serviceInterest, setServiceInterest] = useState(initial.serviceInterest ?? '')
+  const [source, setSource] = useState(initial.source ?? '')
+  const [lastContactDate, setLastContactDate] = useState(initial.lastContactDate ?? '')
+  const [nextAction, setNextAction] = useState(initial.nextAction ?? '')
   const [isDeliverable, setIsDeliverable] = useState(kind === 'deliverable')
   const [more, setMore] = useState(Boolean(initial.notes || initial.url))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const titleInput = useRef<HTMLInputElement>(null)
+  const dialogRef = useRef<HTMLElement>(null)
+  const discardAndClose = useCallback(() => { if (!isEdit) localStorage.removeItem(draftKey); onClose() }, [draftKey, isEdit, onClose])
 
   useEffect(() => { titleInput.current?.focus() }, [])
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useDialogBehavior(dialogRef, discardAndClose)
 
   useEffect(() => {
     if (!existing) return
@@ -1068,7 +1140,9 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
       setTitle(existing.business); setOwner(existing.owner); setStatus(existing.stage)
       setDueDate(existing.followUpDate ?? ''); setNotes(existing.notes ?? ''); setUrl(existing.website ?? '')
       setTariff(existing.tariff ?? ''); setQuoted(existing.quoted?.toString() ?? '')
-      setMore(Boolean(existing.notes || existing.website))
+      setContact(existing.contact ?? ''); setServiceInterest(existing.serviceInterest ?? ''); setSource(existing.source ?? '')
+      setLastContactDate(existing.lastContactDate ?? ''); setNextAction(existing.nextAction ?? '')
+      setMore(Boolean(existing.notes || existing.website || existing.source || existing.lastContactDate))
     } else if (kind === 'link') {
       setTitle(existing.name); setOwner(existing.owner); setUrl(existing.url); setLinkType(existing.type ?? ''); setNotes(existing.notes ?? '')
       setProjectId(existing.projectId ?? '')
@@ -1089,12 +1163,13 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
 
   useEffect(() => {
     if (isEdit) return
-    localStorage.setItem(draftKey, JSON.stringify({ title, projectId, owner, dueDate, status, notes, url, priority, linkType, tariff, quoted }))
-  }, [draftKey, isEdit, title, projectId, owner, dueDate, status, notes, url, priority, linkType, tariff, quoted])
+    localStorage.setItem(draftKey, JSON.stringify({ title, projectId, owner, dueDate, status, notes, url, priority, linkType, tariff, quoted, contact, serviceInterest, source, lastContactDate, nextAction }))
+  }, [draftKey, isEdit, title, projectId, owner, dueDate, status, notes, url, priority, linkType, tariff, quoted, contact, serviceInterest, source, lastContactDate, nextAction])
 
   const config = modalConfig(kind)
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); if (!title.trim()) return setError('Add a short title.')
+    if (kind !== 'lead' && kind !== 'link' && !projectId) return setError('Choose the project this belongs to.')
     if (url.trim() && (kind === 'task' || kind === 'milestone' || kind === 'deliverable' || kind === 'lead') && !isSafeUrl(url.trim())) return setError('Only http:// or https:// links are allowed.')
     if (cloudEnabled && !isEdit && !getActiveRealmId()) return setError('Still connecting to the workspace. Try again in a moment.')
     setSaving(true); setError('')
@@ -1130,9 +1205,9 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
         else await db.resources.add({ id: newId('resources', 'link'), ...add, ...data })
       }
       if (kind === 'lead') {
-        const data = { business: title.trim(), owner, followUpDate: dueDate || undefined, stage: (status || 'prospect') as LeadStage, notes: notes || undefined, website: url || undefined, tariff: tariff || undefined, quoted: quoted ? Number(quoted) : undefined, updatedAt: stamp }
+        const data = { business: title.trim(), contact: contact.trim() || undefined, serviceInterest: serviceInterest.trim() || undefined, source: source.trim() || undefined, lastContactDate: lastContactDate || undefined, nextAction: nextAction.trim() || undefined, owner, followUpDate: dueDate || undefined, stage: (status || 'prospect') as LeadStage, notes: notes || undefined, website: url || undefined, tariff: tariff || undefined, quoted: quoted ? Number(quoted) : undefined, updatedAt: stamp }
         if (isEdit) await db.leads.update(state.recordId!, data)
-        else await db.leads.add({ id: newId('leads', 'lead'), ...add, ...data, nextAction: 'Set the next action' })
+        else await db.leads.add({ id: newId('leads', 'lead'), ...add, ...data })
       }
       localStorage.removeItem(draftKey); setToast({ message: `${config.singular} saved.` }); onClose()
     } catch (err) { setError(err instanceof Error ? err.message : 'Could not save. Your draft is preserved.') }
@@ -1145,18 +1220,20 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
     if (!table) return
     const stamp = nowIso()
     await (table as any).update(state.recordId, { archivedAt: stamp, updatedAt: stamp })
-    setToast({ message: `${config.singular} deleted.`, action: { label: 'Undo', run: () => (table as any).update(state.recordId, { archivedAt: undefined, updatedAt: nowIso() }) } })
+    setToast({ message: `${config.singular} archived.`, action: { label: 'Undo', run: () => (table as any).update(state.recordId, { archivedAt: undefined, updatedAt: nowIso() }) } })
     onClose()
   }
 
-  const showProject = kind !== 'lead' && !state.projectId && !isEdit
+  const showProject = kind !== 'lead'
   const showDate = kind !== 'note' && kind !== 'idea' && kind !== 'link'
   const showStatus = config.statuses.length > 0
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header><div><p className="eyebrow">{isEdit ? 'Edit' : 'Quick add'}</p><h2 id="modal-title">{isEdit ? 'Edit' : 'Add'} {config.label}</h2></div><button onClick={onClose} aria-label="Close"><X /></button></header><form onSubmit={save}>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && discardAndClose()}><section ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header><div><p className="eyebrow">{isEdit ? 'Edit' : 'Quick capture'}</p><h2 id="modal-title">{isEdit ? 'Edit' : 'Add'} {config.label}</h2></div><button onClick={discardAndClose} aria-label="Close"><X /></button></header><form onSubmit={save}>
+    {!isEdit && initial.title && <p className="draft-restored">Unsaved draft restored.</p>}
     <label><span>{config.titleLabel}</span><input ref={titleInput} value={title} onChange={(e) => setTitle(e.target.value)} placeholder={config.placeholder} required /></label>
     {kind === 'link' && <label><span>URL</span><input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" required /></label>}
     {kind === 'link' && <label><span>Type <small>optional</small></span><input value={linkType} onChange={(e) => setLinkType(e.target.value)} placeholder="Portfolio, Demo, Tool, Social…" /></label>}
-    {showProject && <label><span>Project</span><select value={projectId} onChange={(e) => setProjectId(e.target.value)} required>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}
+    {showProject && <label><span>Project{kind === 'link' && <small> optional</small>}</span><select value={projectId} onChange={(e) => setProjectId(e.target.value)} required={kind !== 'link'}>{kind === 'link' && <option value="">Workspace-wide</option>}{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}
+    {kind === 'lead' && <><div className="form-row"><label><span>Contact <small>optional</small></span><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Name, email or phone" /></label><label><span>Service <small>optional</small></span><input value={serviceInterest} onChange={(e) => setServiceInterest(e.target.value)} placeholder="Website, social, studio…" /></label></div><label><span>Next action</span><input value={nextAction} onChange={(e) => setNextAction(e.target.value)} placeholder="What happens next?" /></label></>}
     <div className="form-row"><label><span>Owner</span><select value={owner} onChange={(e) => setOwner(e.target.value as Owner)}>{owners.map((item) => <option key={item}>{item}</option>)}</select></label>{showDate && <label><span>{kind === 'lead' ? 'Follow-up' : 'Deadline'} <small>optional</small></span><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>}</div>
     {showStatus && <label><span>{kind === 'lead' ? 'Stage' : 'Status'}</span><select value={status || config.defaultStatus} onChange={(e) => setStatus(e.target.value)}>{config.statuses.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
     {(kind === 'milestone' || kind === 'deliverable') && <label className="check-label"><input type="checkbox" checked={isDeliverable} onChange={(e) => setIsDeliverable(e.target.checked)} /><span>The client receives this <small>shows up under deliverables and deadlines</small></span></label>}
@@ -1167,10 +1244,11 @@ function EntryModal({ state, currentUser, onClose, setToast }: { state: ModalSta
     {kind === 'lead' && (isEdit
       ? <PaymentsEditor leadId={state.recordId!} quoted={quoted ? Number(quoted) : undefined} currentUser={currentUser} setToast={setToast} />
       : <p className="payments-hint">Save the client first, then you can add deposits, installments, a retainer, or a revenue share.</p>)}
+    {kind === 'lead' && isEdit && <div className="linked-project-callout">{linkedProject ? <><span><strong>Linked project</strong><small>{linkedProject.name}</small></span><button type="button" className="secondary-button" onClick={() => openProject(linkedProject.id)}>Open project</button></> : <><span><strong>No delivery project yet</strong><small>Create one when this work is ready to deliver.</small></span><button type="button" className="secondary-button" onClick={() => createProjectForClient(state.recordId!)}>Create project</button></>}</div>}
     <button type="button" className="more-toggle" onClick={() => setMore(!more)}>{more ? 'Hide details' : 'More details'}<ChevronDown /></button>
-    {more && <div className="more-fields"><label><span>{kind === 'note' || kind === 'idea' ? 'Text' : 'Notes'} <small>optional</small></span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} placeholder="Add only the context someone will need later." /></label>{(kind === 'task' || kind === 'milestone' || kind === 'deliverable' || kind === 'lead') && <label><span>{kind === 'lead' ? 'Website' : 'Drive link'} <small>optional</small></span><input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" /></label>}{kind === 'task' && <label><span>Priority</span><select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></select></label>}</div>}
+    {more && <div className="more-fields">{kind === 'lead' && <div className="form-row"><label><span>Last contacted <small>optional</small></span><input type="date" value={lastContactDate} onChange={(e) => setLastContactDate(e.target.value)} /></label><label><span>Source <small>optional</small></span><input value={source} onChange={(e) => setSource(e.target.value)} placeholder="Referral, website…" /></label></div>}<label><span>{kind === 'note' || kind === 'idea' ? 'Text' : 'Notes'} <small>optional</small></span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} placeholder="Add only the context someone will need later." /></label>{(kind === 'task' || kind === 'milestone' || kind === 'deliverable' || kind === 'lead') && <label><span>{kind === 'lead' ? 'Website' : 'Drive link'} <small>optional</small></span><input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" /></label>}{kind === 'task' && <label><span>Priority</span><select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></select></label>}</div>}
     {error && <p className="form-error">{error}</p>}
-    <footer>{isEdit && <button type="button" className="danger-link" onClick={remove}>Delete</button>}<span className="footer-spacer" /><button type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : `Save ${config.singular.toLowerCase()}`}</button></footer>
+    <footer>{isEdit && <button type="button" className="danger-link" onClick={remove}>Archive</button>}<span className="footer-spacer" /><button type="button" onClick={discardAndClose}>Cancel</button><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : `Save ${config.singular.toLowerCase()}`}</button></footer>
   </form></section></div>
 }
 
@@ -1183,7 +1261,7 @@ function modalConfig(kind: ModalKind) {
   if (kind === 'milestone') return { ...common, singular: 'Step', label: 'plan step', placeholder: 'A meaningful stage in the plan', defaultStatus: 'not_started', statuses: milestoneStatuses.map((s) => [s, milestoneStatusLabels[s]] as [string, string]) }
   if (kind === 'deliverable') return { ...common, singular: 'Deliverable', label: 'deliverable', placeholder: 'Something the client receives', defaultStatus: 'not_started', statuses: milestoneStatuses.map((s) => [s, milestoneStatusLabels[s]] as [string, string]) }
   if (kind === 'link') return { ...common, singular: 'Link', label: 'link', titleLabel: 'Name', placeholder: 'What does this link open?' }
-  if (kind === 'lead') return { ...common, singular: 'Client', label: 'client', titleLabel: 'Business', placeholder: 'Business name', defaultStatus: 'prospect', statuses: leadStageGroups.map((g) => [g.canonical, g.label] as [string, string]) }
+  if (kind === 'lead') return { ...common, singular: 'Client', label: 'client', titleLabel: 'Business', placeholder: 'Business name', defaultStatus: 'prospect', statuses: (Object.entries(leadStageLabels) as [LeadStage, string][]).map(([value, label]) => [value, label] as [string, string]) }
   return common
 }
 
@@ -1339,6 +1417,8 @@ function PaymentForm({ kind, leadId, startPosition, currentUser, onDone, setToas
 
 function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { state: ProjectModalState; currentUser: Owner; onClose: () => void; setToast: (toast: ToastState) => void; openProject: (id: string) => void }) {
   const existing = useLiveQuery(() => state.projectId ? db.projects.get(state.projectId) : undefined, [state.projectId])
+  const clients = useLiveQuery(() => db.leads.filter((lead) => !lead.archivedAt).toArray(), [], [])
+  const sourceClient = clients.find((client) => client.id === state.clientId)
   const isEdit = Boolean(state.projectId)
   const [name, setName] = useState('')
   const [clientType, setClientType] = useState<Project['clientType']>('client')
@@ -1348,21 +1428,25 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
   const [targetDate, setTargetDate] = useState('')
   const [driveFolderUrl, setDriveFolderUrl] = useState('')
   const [color, setColor] = useState(projectColors[1])
+  const [clientId, setClientId] = useState(state.clientId ?? '')
   const [error, setError] = useState('')
   const nameInput = useRef<HTMLInputElement>(null)
+  const dialogRef = useRef<HTMLElement>(null)
 
   useEffect(() => { nameInput.current?.focus() }, [])
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useDialogBehavior(dialogRef, onClose)
   useEffect(() => {
     if (!existing) return
     setName(existing.name); setClientType(existing.clientType); setPhase(existing.phase)
     setGoal(existing.goal); setCurrentFocus(existing.currentFocus); setTargetDate(existing.targetDate ?? '')
-    setDriveFolderUrl(existing.driveFolderUrl ?? ''); setColor(existing.color)
+    setDriveFolderUrl(existing.driveFolderUrl ?? ''); setColor(existing.color); setClientId(existing.clientId ?? '')
   }, [existing])
+  useEffect(() => {
+    if (isEdit || !sourceClient) return
+    setName(sourceClient.business); setClientType('client'); setClientId(sourceClient.id)
+    setGoal(`Deliver ${sourceClient.serviceInterest || sourceClient.tariff || 'the agreed work'} successfully for ${sourceClient.business}.`)
+    setCurrentFocus('Confirm scope and agree the first next step.')
+  }, [isEdit, sourceClient])
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -1370,7 +1454,7 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
     if (driveFolderUrl.trim() && !isSafeUrl(driveFolderUrl.trim())) return setError('Only http:// or https:// links are allowed.')
     if (cloudEnabled && !state.projectId && !getActiveRealmId()) return setError('Still connecting to the workspace. Try again in a moment.')
     const stamp = nowIso()
-    const data = { name: name.trim(), clientType, phase: phase.trim() || (clientType === 'internal' ? 'Operations' : 'Getting started'), goal: goal.trim(), currentFocus: currentFocus.trim(), targetDate: targetDate || undefined, driveFolderUrl: driveFolderUrl || undefined, color, updatedAt: stamp }
+    const data = { name: name.trim(), clientId: clientType === 'client' ? clientId || undefined : undefined, clientType, phase: phase.trim() || (clientType === 'internal' ? 'Operations' : 'Getting started'), goal: goal.trim(), currentFocus: currentFocus.trim(), targetDate: targetDate || undefined, driveFolderUrl: driveFolderUrl || undefined, color, updatedAt: stamp }
     try {
       if (isEdit) {
         await db.projects.update(state.projectId!, data)
@@ -1402,12 +1486,13 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
     onClose()
   }
 
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="project-modal-title"><header><div><p className="eyebrow">{isEdit ? 'Edit' : 'New'}</p><h2 id="project-modal-title">{isEdit ? 'Edit project' : 'New project'}</h2></div><button onClick={onClose} aria-label="Close"><X /></button></header><form onSubmit={save}>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="project-modal-title"><header><div><p className="eyebrow">{isEdit ? 'Edit' : 'New'}</p><h2 id="project-modal-title">{isEdit ? 'Edit project' : 'New project'}</h2></div><button onClick={onClose} aria-label="Close"><X /></button></header><form onSubmit={save}>
     <label><span>Name</span><input ref={nameInput} value={name} onChange={(e) => setName(e.target.value)} placeholder="Client or project name" required /></label>
     <div className="form-row">
       <label><span>Type</span><select value={clientType} onChange={(e) => setClientType(e.target.value as Project['clientType'])}><option value="client">Client project</option><option value="internal">Internal</option></select></label>
       <label><span>Phase <small>optional</small></span><input value={phase} onChange={(e) => setPhase(e.target.value)} placeholder="Foundation, Build…" /></label>
     </div>
+    {clientType === 'client' && <label><span>Client <small>optional</small></span><select value={clientId} onChange={(e) => setClientId(e.target.value)}><option value="">No linked client</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.business}</option>)}</select></label>}
     <label><span>Goal</span><textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={2} placeholder="What does done look like for this project?" /></label>
     <label><span>Current focus</span><input value={currentFocus} onChange={(e) => setCurrentFocus(e.target.value)} placeholder="The one thing you are pushing right now" /></label>
     <div className="form-row">
