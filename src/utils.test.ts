@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activeMeetingStatus, addMonthsIso, daysUntil, formatMoney, fullDate, generateRecurring, leadStageLabels, nearestByDate, nextPayment, PUBLIC_REALM_ID, resolveWorkspaceRealmId, similarTitles, sumDue, sumReceived, taskStatusLabels } from './utils'
+import { activeMeetingStatus, addMonthsIso, canonicalLeadStage, daysUntil, formatMoney, fullDate, generateRecurring, leadStageLabels, nearestByDate, nextPayment, PUBLIC_REALM_ID, resolveWorkspaceRealmId, similarTitles, sumDue, sumReceived, taskStatusLabels } from './utils'
 import type { Payment } from './types'
 
 const pay = (over: Partial<Payment>): Payment => ({
@@ -21,7 +21,9 @@ describe('dashboard helpers', () => {
   it('uses plain-language labels', () => {
     expect(taskStatusLabels.next).toBe('To do')
     expect(taskStatusLabels.in_progress).toBe('Doing')
-    expect(leadStageLabels.replied).toBe('Replied')
+    expect(leadStageLabels.replied).toBe('In conversation')
+    expect(leadStageLabels.discovery).toBe('In conversation')
+    expect(canonicalLeadStage('discovery')).toBe('replied')
     expect(leadStageLabels.won).toBe('Won')
   })
 

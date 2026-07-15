@@ -13,7 +13,7 @@ import type {
 } from './types'
 import {
   activeMeetingStatus, addMonthsIso, daysSince, daysUntil, formatDate, formatMoney, fullDate, generateRecurring,
-  isOverdue, isSafeUrl, leadStageGroups, leadStageLabels, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
+  canonicalLeadStage, isOverdue, isSafeUrl, leadStageGroups, leadStageLabels, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
   nowIso, paymentTimingLabels, resolveWorkspaceRealmId, sumDue, sumReceived, taskStatusLabels
 } from './utils'
 
@@ -370,15 +370,17 @@ export default function App() {
           <NavButton active={view === 'sales'} icon={<Target />} label="Clients" onClick={() => navigate('sales')} />
           <NavButton active={view === 'meeting'} icon={<MessageSquareText />} label="Meeting" onClick={() => navigate('meeting')} />
         </nav>
-        <div className="sidebar-projects" aria-label="Active projects">
-          <p>Active projects</p>
-          {projects.filter((p) => p.status === 'active').sort((a, b) => a.order - b.order).map((project) => (
-            <button key={project.id} onClick={() => openProject(project.id)} className={selectedProjectId === project.id && view === 'projects' ? 'selected' : ''}>
-              <span className="project-dot" style={{ background: project.color }} />{project.name}
-            </button>
-          ))}
-          <button className="sidebar-new" onClick={() => { setProjectModal({}); setMobileNavOpen(false) }}><Plus /> New project</button>
-        </div>
+        <details className="sidebar-projects" aria-label="Active projects">
+          <summary><span>Active projects</span><strong>{projects.filter((p) => p.status === 'active').length}</strong><ChevronDown /></summary>
+          <div>
+            {projects.filter((p) => p.status === 'active').sort((a, b) => a.order - b.order).map((project) => (
+              <button key={project.id} onClick={() => openProject(project.id)} className={selectedProjectId === project.id && view === 'projects' ? 'selected' : ''}>
+                <span className="project-dot" style={{ background: project.color }} />{project.name}
+              </button>
+            ))}
+            <button className="sidebar-new" onClick={() => { setProjectModal({}); setMobileNavOpen(false) }}><Plus /> New project</button>
+          </div>
+        </details>
         <button className="sidebar-settings" onClick={() => navigate('settings')}><Settings /> Settings</button>
       </aside>
       {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
@@ -556,6 +558,19 @@ function OwnerChip({ owner }: { owner: Owner }) {
   return <span className="owner-chip" title={owner}>{ownerShort[owner]}</span>
 }
 
+type HomeSection = 'focus' | 'projects' | 'schedule' | 'tasks' | 'followups' | 'meeting'
+
+function HomeSectionButton({ id, active, icon, title, hint, count, onClick }: {
+  id: HomeSection; active: boolean; icon: React.ReactNode; title: string; hint: string; count: number; onClick: () => void
+}) {
+  return <button className={`home-section-button ${active ? 'active' : ''}`} onClick={onClick} aria-expanded={active} aria-controls="home-section-content">
+    <span className="home-section-icon">{icon}</span>
+    <span><strong>{title}</strong><small>{hint}</small></span>
+    <span className="home-section-count">{count}</span>
+    <ChevronRight className="home-section-chevron" />
+  </button>
+}
+
 function HomeView({ openProject, navigate, openEdit, openClient }: {
   openProject: (id: string) => void
   navigate: (view: ViewName) => void
@@ -570,60 +585,64 @@ function HomeView({ openProject, navigate, openEdit, openClient }: {
   const payments = useLiveQuery(() => db.payments.filter((p) => !p.archivedAt && p.status === 'due').toArray(), [], [])
   const meetingItems = useLiveQuery(() => db.meetingItems.filter((item) => !item.archivedAt && activeMeetingStatus(item.status)).toArray(), [], [])
 
-  const dueFollowUps = leads.filter((lead) => lead.followUpDate && daysUntil(lead.followUpDate) <= 7).sort((a, b) => (a.followUpDate ?? '').localeCompare(b.followUpDate ?? '')).slice(0, 3)
+  const dueFollowUps = leads.filter((lead) => lead.followUpDate && daysUntil(lead.followUpDate) <= 7).sort((a, b) => (a.followUpDate ?? '').localeCompare(b.followUpDate ?? ''))
   const nextTasks = tasks.filter((task) => task.status === 'next' || task.status === 'in_progress').sort((a, b) => (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999')).slice(0, 6)
+  const urgentTasks = nextTasks.filter((task) => task.dueDate && daysUntil(task.dueDate) <= 7)
+  const blockers = tasks.filter((task) => task.status === 'waiting')
+  const [section, setSection] = useState<HomeSection>('focus')
   const [importPromptDismissed, setImportPromptDismissed] = usePersistedState('impulse:import-prompt-dismissed', false)
+  const focusItems = [
+    ...blockers.map((task) => ({ id: `blocker-${task.id}`, title: task.title, meta: `Waiting · ${projects.find((p) => p.id === task.projectId)?.name ?? 'Project'}`, date: task.dueDate, open: () => openEdit('task', task.projectId, task.id), urgent: true })),
+    ...urgentTasks.map((task) => ({ id: `task-${task.id}`, title: task.title, meta: `Task · ${projects.find((p) => p.id === task.projectId)?.name ?? 'Project'}`, date: task.dueDate, open: () => openEdit('task', task.projectId, task.id), urgent: Boolean(task.dueDate && isOverdue(task.dueDate)) })),
+    ...dueFollowUps.map((lead) => ({ id: `lead-${lead.id}`, title: lead.business, meta: `Follow-up · ${lead.nextAction || 'Choose the next action'}`, date: lead.followUpDate, open: () => openClient(lead.id), urgent: Boolean(lead.followUpDate && isOverdue(lead.followUpDate)) }))
+  ].slice(0, 7)
+  const sectionButtons: { id: HomeSection; icon: React.ReactNode; title: string; hint: string; count: number }[] = [
+    { id: 'focus', icon: <Target />, title: 'Focus', hint: 'Only what may need you now', count: blockers.length + urgentTasks.length + dueFollowUps.length },
+    { id: 'projects', icon: <FolderKanban />, title: 'Projects', hint: 'Current focus and blockers', count: projects.length },
+    { id: 'schedule', icon: <CalendarDays />, title: 'Next 14 days', hint: 'Dated work and payments', count: milestones.filter((m) => m.dueDate && m.status !== 'done' && daysUntil(m.dueDate) <= 14).length + tasks.filter((t) => t.dueDate && t.status !== 'done' && daysUntil(t.dueDate) <= 14).length + leads.filter((l) => l.followUpDate && daysUntil(l.followUpDate) <= 14).length + payments.filter((p) => p.dueDate && daysUntil(p.dueDate) <= 14).length },
+    { id: 'tasks', icon: <Check />, title: 'Next tasks', hint: 'The queue, when you need it', count: nextTasks.length },
+    { id: 'followups', icon: <UserPlus />, title: 'Client follow-ups', hint: 'Due in the next seven days', count: dueFollowUps.length },
+    { id: 'meeting', icon: <MessageSquareText />, title: 'Meeting', hint: 'Unresolved topics', count: meetingItems.length }
+  ]
 
   return <div className="page">
-    <PageHeader eyebrow="Today" title="What needs your attention" description="Overdue work, blockers and the next actions that move projects forward." />
-    <section className="attention-list" aria-label="Active projects">
-      {projects.sort((a, b) => {
-        const hasWaiting = (project: Project) => tasks.some((task) => task.projectId === project.id && task.status === 'waiting')
-        const hasOverdue = (project: Project) => tasks.some((task) => task.projectId === project.id && task.status !== 'done' && isOverdue(task.dueDate))
-        return Number(hasWaiting(b)) - Number(hasWaiting(a)) || Number(hasOverdue(b)) - Number(hasOverdue(a)) || a.order - b.order
-      }).map((project) => {
-        const projectMilestones = milestones.filter((m) => m.projectId === project.id).sort((a, b) => a.position - b.position)
-        const doneCount = projectMilestones.filter((m) => m.status === 'done').length
-        const openMilestones = projectMilestones.filter((m) => m.status !== 'done')
-        const nextMilestone = openMilestones.find((m) => m.status === 'in_progress') ?? openMilestones[0]
-        const openDeliverables = openMilestones.filter((m) => m.deliverable)
-        const nextDeliverable = nearestByDate(openDeliverables) ?? openDeliverables[0]
-        const blocker = tasks.find((task) => task.projectId === project.id && task.status === 'waiting')
-        return <button key={project.id} className="attention-row" onClick={() => openProject(project.id)}>
-          <span className="project-accent" style={{ background: project.color }} />
-          <span className="attention-project"><strong>{project.name}</strong><small>{project.phase}{projectMilestones.length ? ` · ${doneCount}/${projectMilestones.length}` : ''}</small>{projectMilestones.length > 0 && <span className="progress-track" aria-hidden="true"><span className="progress-fill" style={{ width: `${Math.round((doneCount / projectMilestones.length) * 100)}%` }} /></span>}</span>
-          <span className="attention-focus"><small>Current focus</small>{project.currentFocus}</span>
-          <span><small>Next step</small>{nextMilestone?.title ?? (projectMilestones.length ? 'Plan complete' : 'Set the next step')}</span>
-          <span><small>Next deliverable</small>{nextDeliverable?.title ?? 'Mark a step as deliverable'}{nextDeliverable?.dueDate && <em className={isOverdue(nextDeliverable.dueDate) ? 'overdue' : ''}>{formatDate(nextDeliverable.dueDate)}</em>}</span>
-          <span className={blocker ? 'has-blocker' : 'clear'}><small>{blocker ? 'Waiting' : 'Status'}</small>{blocker?.title ?? 'No blocker recorded'}</span>
-          <span className={`attention-mobile ${blocker ? 'has-blocker' : ''}`}>{blocker ? `Waiting: ${blocker.title}` : nextMilestone ? `Next: ${nextMilestone.title}` : 'Plan complete'}</span>
-          <ChevronRight />
-        </button>
-      })}
-      {!projects.length && !importPromptDismissed && <div className="first-run-card"><button className="notice-dismiss" aria-label="Dismiss import reminder" onClick={() => setImportPromptDismissed(true)}><X /></button><p className="eyebrow">First setup</p><h2>Bring in your Command Center</h2><p>Your private client data is kept outside the public app build. Import the prepared local file once, then continue here.</p><ol><li>Open Settings</li><li>Choose the Command Center import file</li><li>Review the three project overviews</li></ol><button className="primary-button" onClick={() => navigate('settings')}>Open settings</button></div>}
-    </section>
+    <PageHeader eyebrow="Today" title="One thing at a time" description="Pick a section. Everything else stays quiet until you open it." />
+    <div className="calm-dashboard">
+      <nav className="home-section-picker" aria-label="Dashboard sections">
+        {sectionButtons.map((item) => <HomeSectionButton key={item.id} {...item} active={section === item.id} onClick={() => setSection(item.id)} />)}
+      </nav>
 
-    <UpcomingDeadlines projects={projects} milestones={milestones} tasks={tasks} leads={leads} payments={payments} allLeads={allLeads} openEdit={openEdit} openClient={openClient} />
+      <section className="home-section-content" id="home-section-content" aria-live="polite">
+        {section === 'focus' && <div className="focus-panel"><div className="focus-intro"><p className="eyebrow">Right now</p><h2>{focusItems.length ? `${focusItems.length} ${focusItems.length === 1 ? 'item' : 'items'} worth checking` : 'Nothing urgent'}</h2><p>{focusItems.length ? 'Start at the top. The rest can wait.' : 'You can choose another section without carrying an alert state.'}</p></div><div className="simple-list focus-list">{focusItems.map((item) => <div className="list-row is-actionable" key={item.id}><span><button className="row-main" onClick={item.open}><strong>{item.title}</strong><small>{item.meta}</small></button></span>{item.date && <time className={item.urgent ? 'overdue' : ''}>{formatDate(item.date)}</time>}<ChevronRight /></div>)}{!focusItems.length && <EmptyState text="No blockers, urgent tasks, or follow-ups due." />}</div></div>}
 
-    <div className="home-lower">
-      <section>
-        <SectionTitle title="Next tasks" action={<button onClick={() => navigate('projects')}>View projects</button>} />
-        <div className="simple-list">
-          {nextTasks.length ? nextTasks.map((task) => <TaskLine key={task.id} task={task} project={projects.find((p) => p.id === task.projectId)} onOpen={() => openEdit('task', task.projectId, task.id)} />) : <EmptyState text="No next tasks yet." />}
-        </div>
-      </section>
-      <section>
-        <SectionTitle title="Client follow-ups" action={<button onClick={() => navigate('sales')}>View all</button>} />
-        <div className="simple-list">
-          {dueFollowUps.length ? dueFollowUps.map((lead) => <div className="list-row is-actionable" key={lead.id}><span><button className="row-main" onClick={() => openClient(lead.id)}><strong>{lead.business}</strong><small>{lead.nextAction || 'Set a next action'}</small></button></span><time className={isOverdue(lead.followUpDate) ? 'overdue' : ''}>{formatDate(lead.followUpDate)}</time><ChevronRight /></div>) : <EmptyState text="No follow-ups due in the next seven days." />}
-        </div>
-      </section>
-      <section>
-        <SectionTitle title="Meeting agenda" action={<button onClick={() => navigate('meeting')}>View all</button>} />
-        <div className="simple-list">
-          {meetingItems.slice(0, 3).map((item) => <div className="list-row is-actionable" key={item.id}><span><button className="row-main" onClick={() => openEdit('discussion', item.projectId, item.id)}><strong>{item.title}</strong><small>{projects.find((p) => p.id === item.projectId)?.name}</small></button></span><ChevronRight /></div>)}
-          {!meetingItems.length && <EmptyState text="No unresolved topics." />}
-        </div>
+        {section === 'projects' && <section className="attention-list" aria-label="Active projects">
+          {projects.sort((a, b) => {
+            const hasWaiting = (project: Project) => tasks.some((task) => task.projectId === project.id && task.status === 'waiting')
+            const hasOverdue = (project: Project) => tasks.some((task) => task.projectId === project.id && task.status !== 'done' && isOverdue(task.dueDate))
+            return Number(hasWaiting(b)) - Number(hasWaiting(a)) || Number(hasOverdue(b)) - Number(hasOverdue(a)) || a.order - b.order
+          }).map((project) => {
+            const projectMilestones = milestones.filter((m) => m.projectId === project.id).sort((a, b) => a.position - b.position)
+            const doneCount = projectMilestones.filter((m) => m.status === 'done').length
+            const openMilestones = projectMilestones.filter((m) => m.status !== 'done')
+            const nextMilestone = openMilestones.find((m) => m.status === 'in_progress') ?? openMilestones[0]
+            const blocker = tasks.find((task) => task.projectId === project.id && task.status === 'waiting')
+            return <button key={project.id} className="attention-row calm-project-row" onClick={() => openProject(project.id)}>
+              <span className="project-accent" style={{ background: project.color }} />
+              <span className="attention-project"><strong>{project.name}</strong><small>{project.phase}{projectMilestones.length ? ` · ${doneCount}/${projectMilestones.length}` : ''}</small>{projectMilestones.length > 0 && <span className="progress-track" aria-hidden="true"><span className="progress-fill" style={{ width: `${Math.round((doneCount / projectMilestones.length) * 100)}%` }} /></span>}</span>
+              <span className="attention-focus"><small>Current focus</small>{project.currentFocus}</span>
+              <span><small>Next step</small>{nextMilestone?.title ?? (projectMilestones.length ? 'Plan complete' : 'Set the next step')}</span>
+              <span className={blocker ? 'has-blocker' : 'clear'}><small>{blocker ? 'Waiting' : 'Status'}</small>{blocker?.title ?? 'Clear'}</span>
+              <span className={`attention-mobile ${blocker ? 'has-blocker' : ''}`}>{blocker ? `Waiting: ${blocker.title}` : nextMilestone ? `Next: ${nextMilestone.title}` : 'Plan complete'}</span>
+              <ChevronRight />
+            </button>
+          })}
+          {!projects.length && !importPromptDismissed && <div className="first-run-card"><button className="notice-dismiss" aria-label="Dismiss import reminder" onClick={() => setImportPromptDismissed(true)}><X /></button><p className="eyebrow">First setup</p><h2>Bring in your Command Center</h2><p>Your private client data is kept outside the public app build. Import the prepared local file once, then continue here.</p><ol><li>Open Settings</li><li>Choose the Command Center import file</li><li>Review the three project overviews</li></ol><button className="primary-button" onClick={() => navigate('settings')}>Open settings</button></div>}
+        </section>}
+
+        {section === 'schedule' && <UpcomingDeadlines projects={projects} milestones={milestones} tasks={tasks} leads={leads} payments={payments} allLeads={allLeads} openEdit={openEdit} openClient={openClient} />}
+        {section === 'tasks' && <section><SectionTitle title="Next tasks" action={<button onClick={() => navigate('projects')}>View projects</button>} /><div className="simple-list">{nextTasks.length ? nextTasks.map((task) => <TaskLine key={task.id} task={task} project={projects.find((p) => p.id === task.projectId)} onOpen={() => openEdit('task', task.projectId, task.id)} />) : <EmptyState text="No next tasks yet." />}</div></section>}
+        {section === 'followups' && <section><SectionTitle title="Client follow-ups" action={<button onClick={() => navigate('sales')}>View all clients</button>} /><div className="simple-list">{dueFollowUps.length ? dueFollowUps.slice(0, 8).map((lead) => <div className="list-row is-actionable" key={lead.id}><span><button className="row-main" onClick={() => openClient(lead.id)}><strong>{lead.business}</strong><small>{lead.nextAction || 'Choose the next action'}</small></button></span><time className={isOverdue(lead.followUpDate) ? 'overdue' : ''}>{formatDate(lead.followUpDate)}</time><ChevronRight /></div>) : <EmptyState text="No follow-ups due in the next seven days." />}</div></section>}
+        {section === 'meeting' && <section><SectionTitle title="Meeting agenda" action={<button onClick={() => navigate('meeting')}>Open meeting</button>} /><div className="simple-list">{meetingItems.slice(0, 8).map((item) => <div className="list-row is-actionable" key={item.id}><span><button className="row-main" onClick={() => openEdit('discussion', item.projectId, item.id)}><strong>{item.title}</strong><small>{projects.find((p) => p.id === item.projectId)?.name}</small></button></span><ChevronRight /></div>)}{!meetingItems.length && <EmptyState text="No unresolved topics." />}</div></section>}
       </section>
     </div>
   </div>
@@ -695,7 +714,7 @@ function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, op
     <nav className="subnav" aria-label="Project sections">
       {(Object.keys(tabLabels) as ProjectTab[]).map((item) => <button key={item} onClick={() => setTab(item)} className={tab === item ? 'active' : ''}>{tabLabels[item]}</button>)}
     </nav>
-    {tab === 'overview' && <ProjectOverview project={project} openAdd={openAdd} openClient={openClient} />}
+    {tab === 'overview' && <ProjectOverview project={project} openAdd={openAdd} openClient={openClient} openProjectEdit={() => openProjectEdit(project.id)} />}
     {tab === 'plan' && <PlanView project={project} openAdd={openAdd} setToast={setToast} />}
     {tab === 'board' && <BoardView project={project} openAdd={openAdd} setToast={setToast} />}
     {tab === 'notes' && <NotesView project={project} openAdd={openAdd} setToast={setToast} />}
@@ -703,7 +722,7 @@ function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, op
   </div>
 }
 
-function ProjectOverview({ project, openAdd, openClient }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openClient: (id: string) => void }) {
+function ProjectOverview({ project, openAdd, openClient, openProjectEdit }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openClient: (id: string) => void; openProjectEdit: () => void }) {
   const milestones = useLiveQuery(() => db.milestones.where('projectId').equals(project.id).filter((m) => !m.archivedAt).sortBy('position'), [project.id], [])
   const tasks = useLiveQuery(() => db.tasks.where('projectId').equals(project.id).filter((t) => !t.archivedAt && t.status !== 'done').toArray(), [project.id], [])
   const meetingItems = useLiveQuery(() => db.meetingItems.where('projectId').equals(project.id).filter((m) => !m.archivedAt && activeMeetingStatus(m.status)).toArray(), [project.id], [])
@@ -712,7 +731,7 @@ function ProjectOverview({ project, openAdd, openClient }: { project: Project; o
   const client = useLiveQuery(() => project.clientId ? db.leads.get(project.clientId) : undefined, [project.clientId])
   const clientPayments = useLiveQuery(() => project.clientId ? db.payments.where('leadId').equals(project.clientId).filter((payment) => !payment.archivedAt).toArray() : [], [project.clientId], [])
   return <div className="project-overview">
-    <section className="goal-panel"><p className="eyebrow">Project goal</p><h2>{project.goal}</h2>{client && <button className="project-client-link" onClick={() => openClient(client.id)}><Users /> {client.business}{clientPayments.length ? ` · ${formatMoney(sumReceived(clientPayments)) || '₽0'} received${sumDue(clientPayments) ? ` · ${formatMoney(sumDue(clientPayments))} due` : ''}` : ''}<ChevronRight /></button>}{project.targetDate && <span><CalendarDays /> Target {fullDate(project.targetDate)}</span>}{milestones.length > 0 && <span><Check /> {doneCount} of {milestones.length} steps done</span>}</section>
+    <section className="goal-panel"><p className="eyebrow">Project goal</p><h2>{project.goal}</h2>{client ? <button className="project-client-link" onClick={() => openClient(client.id)}><Users /> {client.business}{clientPayments.length ? ` · ${formatMoney(sumReceived(clientPayments)) || '₽0'} received${sumDue(clientPayments) ? ` · ${formatMoney(sumDue(clientPayments))} due` : ''}` : ''}<ChevronRight /></button> : project.clientType === 'client' && <button className="project-client-link is-unlinked" onClick={openProjectEdit}><Link2 /> Link this project to a client<ChevronRight /></button>}{project.targetDate && <span><CalendarDays /> Target {fullDate(project.targetDate)}</span>}{milestones.length > 0 && <span><Check /> {doneCount} of {milestones.length} steps done</span>}</section>
     <section className="overview-section">
       <SectionTitle title="Plan" action={<button onClick={() => openAdd('milestone', project.id)}><Plus /> Add step</button>} />
       <div className="milestone-path">{milestones.slice(0, 8).map((milestone, index) => <div key={milestone.id} className={`milestone-step ${milestone.status}`}><span>{milestone.status === 'done' ? <Check /> : index + 1}</span><p>{milestone.deliverable && <Star className="step-star" aria-label="Client deliverable" />}{milestone.title}</p></div>)}</div>
@@ -790,8 +809,9 @@ function LinksView({ project, openAdd }: { project: Project; openAdd: (kind: Exc
 
 function ClientsView({ addLead, openModal }: { addLead: () => void; openModal: (id: string) => void }) {
   const leads = useLiveQuery(() => db.leads.filter((l) => !l.archivedAt).toArray(), [], [])
+  const projects = useLiveQuery(() => db.projects.filter((project) => !project.archivedAt && project.status === 'active').toArray(), [], [])
   const payments = useLiveQuery(() => db.payments.filter((p) => !p.archivedAt).toArray(), [], [])
-  const [stageFilter, setStageFilter] = useState('active')
+  const [stageFilter, setStageFilter] = useState('current')
   const [serviceFilter, setServiceFilter] = useState('all')
   const [query, setQuery] = useState('')
   const [visibleCount, setVisibleCount] = useState(clientListBatchSize)
@@ -802,44 +822,50 @@ function ClientsView({ addLead, openModal }: { addLead: () => void; openModal: (
   }, [payments])
   const serviceFor = (lead: Lead) => lead.serviceInterest?.trim() || lead.tariff?.trim() || ''
   const serviceOptions = useMemo(() => Array.from(new Set(leads.map(serviceFor).filter(Boolean))).sort((a, b) => a.localeCompare(b)), [leads])
-  const activeLeads = leads.filter((lead) => activeLeadStages.includes(lead.stage))
-  const dueFollowUps = activeLeads.filter((lead) => lead.followUpDate && daysUntil(lead.followUpDate) <= 7).length
-  const potentialTotal = activeLeads.reduce((total, lead) => total + (lead.quoted ?? 0), 0)
+  const currentClientIds = useMemo(() => new Set(projects.map((project) => project.clientId).filter(Boolean)), [projects])
+  const currentClients = leads.filter((lead) => currentClientIds.has(lead.id))
+  const pipelineLeads = leads.filter((lead) => activeLeadStages.includes(lead.stage))
+  const dueFollowUps = leads.filter((lead) => lead.stage !== 'lost' && lead.followUpDate && daysUntil(lead.followUpDate) <= 7).length
+  const potentialTotal = pipelineLeads.reduce((total, lead) => total + (lead.quoted ?? 0), 0)
   const receivedTotal = sumReceived(payments)
   const dueTotal = sumDue(payments)
   const stageCounts = Object.fromEntries(leadStageGroups.map((group) => [group.key, leads.filter((lead) => group.stages.includes(lead.stage)).length]))
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filteredLeads = leads.filter((lead) => {
     const matchesStage = stageFilter === 'all'
-      || (stageFilter === 'active' ? activeLeadStages.includes(lead.stage) : leadStageGroups.find((group) => group.key === stageFilter)?.stages.includes(lead.stage))
+      || (stageFilter === 'current' ? currentClientIds.has(lead.id)
+        : stageFilter === 'active' ? activeLeadStages.includes(lead.stage)
+        : stageFilter === 'followups' ? Boolean(lead.followUpDate && daysUntil(lead.followUpDate) <= 7)
+        : leadStageGroups.find((group) => group.key === stageFilter)?.stages.includes(lead.stage))
     const matchesService = serviceFilter === 'all' || serviceFor(lead) === serviceFilter
     const matchesQuery = !normalizedQuery || [lead.business, lead.contact, lead.serviceInterest, lead.tariff, lead.nextAction]
       .some((value) => value?.toLocaleLowerCase().includes(normalizedQuery))
     return Boolean(matchesStage && matchesService && matchesQuery)
   }).sort((a, b) => {
+    const currentOrder = Number(currentClientIds.has(b.id)) - Number(currentClientIds.has(a.id))
     const dateOrder = (a.followUpDate ?? '9999-12-31').localeCompare(b.followUpDate ?? '9999-12-31')
     const stageOrder = leadStageGroups.findIndex((group) => group.stages.includes(a.stage)) - leadStageGroups.findIndex((group) => group.stages.includes(b.stage))
-    return dateOrder || stageOrder || a.business.localeCompare(b.business)
+    return currentOrder || dateOrder || stageOrder || a.business.localeCompare(b.business)
   })
   const visibleLeads = filteredLeads.slice(0, visibleCount)
 
   useEffect(() => setVisibleCount(clientListBatchSize), [stageFilter, serviceFilter, query])
 
   return <div className="page"><PageHeader eyebrow="Sales & relationships" title="Clients"
-    description="Keep every conversation moving with a clear next action, follow-up and payment picture."
+    description="See who needs a next step. Open the financial detail only when you need it."
     action={<button className="primary-button" onClick={addLead}><Plus /> Add client</button>} />
-    <section className="client-summary" aria-label="Client pipeline summary">
-      <div><span>Active pipeline</span><strong>{activeLeads.length}</strong><small>of {leads.length} total clients</small></div>
-      <div className={dueFollowUps ? 'needs-attention' : ''}><span>Follow-ups due</span><strong>{dueFollowUps}</strong><small>overdue or next 7 days</small></div>
-      <div><span>Potential value</span><strong>{formatMoney(potentialTotal) || '₽0'}</strong><small>quoted on active clients</small></div>
-      <div><span>Money</span><strong>{formatMoney(receivedTotal) || '₽0'}</strong><small>received{dueTotal > 0 ? ` · ${formatMoney(dueTotal)} due` : ' · nothing due'}</small></div>
+    <section className="client-calm-summary" aria-label="Client pipeline summary">
+      <button className={stageFilter === 'followups' ? 'active needs-attention' : 'needs-attention'} onClick={() => setStageFilter('followups')}><span><small>Needs attention</small><strong>{dueFollowUps} follow-up{dueFollowUps === 1 ? '' : 's'}</strong></span><ChevronRight /></button>
+      <button className={stageFilter === 'current' ? 'active' : ''} onClick={() => setStageFilter('current')}><span><small>Working together</small><strong>{currentClients.length} current client{currentClients.length === 1 ? '' : 's'}</strong></span><ChevronRight /></button>
+      <details className="client-finance-summary"><summary><span><small>Money overview</small><strong>{formatMoney(receivedTotal) || '₽0'} received</strong></span><ChevronDown /></summary><div><span><small>Potential</small><strong>{formatMoney(potentialTotal) || '₽0'}</strong></span><span><small>Still due</small><strong>{formatMoney(dueTotal) || '₽0'}</strong></span></div></details>
     </section>
 
-    <div className="stage-filters" aria-label="Filter clients by stage">
-      {[{ key: 'active', label: 'Active', count: activeLeads.length }, { key: 'all', label: 'All', count: leads.length }, ...leadStageGroups.map((group) => ({ ...group, count: stageCounts[group.key] ?? 0 }))].map((filter) =>
+    <div className="stage-filters primary-client-filters" aria-label="Filter clients">
+      {[{ key: 'current', label: 'Current', count: currentClients.length }, { key: 'active', label: 'Pipeline', count: pipelineLeads.length }, { key: 'won', label: 'Won deals', count: stageCounts.won ?? 0 }, { key: 'lost', label: 'Lost', count: stageCounts.lost ?? 0 }, { key: 'all', label: 'All', count: leads.length }].map((filter) =>
         <button key={filter.key} className={stageFilter === filter.key ? 'active' : ''} aria-pressed={stageFilter === filter.key} onClick={() => setStageFilter(filter.key)}><span>{filter.label}</span><strong>{filter.count}</strong></button>
       )}
     </div>
+    <details className="pipeline-filter-details"><summary>Filter by pipeline stage <ChevronDown /></summary><div className="stage-filters" aria-label="Pipeline stages">{leadStageGroups.filter((group) => !['won', 'lost'].includes(group.key)).map((filter) => <button key={filter.key} className={stageFilter === filter.key ? 'active' : ''} aria-pressed={stageFilter === filter.key} onClick={() => setStageFilter(filter.key)}><span>{filter.label}</span><strong>{stageCounts[filter.key] ?? 0}</strong></button>)}</div></details>
 
     <div className="client-toolbar">
       <label className="client-search"><Search /><span className="sr-only">Search clients</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search client, contact or next action" /></label>
@@ -853,13 +879,12 @@ function ClientsView({ addLead, openModal }: { addLead: () => void; openModal: (
         const leadPayments = paymentsByLead.get(lead.id) ?? []
         const received = sumReceived(leadPayments)
         const due = sumDue(leadPayments)
-        const group = leadStageGroups.find((item) => item.stages.includes(lead.stage))
         const service = serviceFor(lead)
         const moneyValue = received || lead.quoted || due
         const moneyLabel = received ? 'received' : lead.quoted ? 'quoted' : due ? 'due' : 'No value yet'
         return <button className="client-row" key={lead.id} onClick={() => openModal(lead.id)} aria-label={`Edit ${lead.business}`}>
           <span className="client-identity"><strong>{lead.business}</strong><small>{lead.owner}{service ? ` · ${service}` : ''}</small></span>
-          <span className="client-stage-cell"><span className={`client-stage stage-${lead.stage}`}>{leadStageLabels[lead.stage]}</span></span>
+          <span className="client-stage-cell"><span className={`client-stage ${currentClientIds.has(lead.id) ? 'stage-current' : `stage-${lead.stage}`}`}>{currentClientIds.has(lead.id) ? 'Current client' : leadStageLabels[lead.stage]}</span></span>
           <span className="client-next">{lead.nextAction || 'Set a next action'}</span>
           <span className="client-followup">{lead.followUpDate ? <><time className={isOverdue(lead.followUpDate) ? 'overdue' : ''}>{formatDate(lead.followUpDate)}</time>{isOverdue(lead.followUpDate) && <small>Overdue</small>}</> : <small>No date</small>}</span>
           <span className="client-money"><strong>{moneyValue ? formatMoney(moneyValue) : '—'}</strong><small>{moneyLabel}{due > 0 && moneyLabel !== 'due' ? ` · ${formatMoney(due)} due` : ''}</small></span>
@@ -1098,9 +1123,9 @@ function EntryModal({ state, currentUser, onClose, setToast, createProjectForCli
     if (!state.recordId) return undefined
     return recordTable(kind)?.get(state.recordId)
   }, [state.recordId, kind])
-  const linkedProject = useLiveQuery(() => kind === 'lead' && state.recordId
-    ? db.projects.filter((project) => project.clientId === state.recordId && !project.archivedAt).first()
-    : undefined, [kind, state.recordId])
+  const linkedProjects = useLiveQuery(() => kind === 'lead' && state.recordId
+    ? db.projects.filter((project) => project.clientId === state.recordId && !project.archivedAt).toArray()
+    : [], [kind, state.recordId], [])
   const draftKey = `impulse:draft:${kind ?? 'none'}`
   const defaultProject = state.projectId ?? projects[0]?.id ?? ''
   const initial = useMemo(() => {
@@ -1111,7 +1136,7 @@ function EntryModal({ state, currentUser, onClose, setToast, createProjectForCli
   const [projectId, setProjectId] = useState(state.projectId ?? initial.projectId ?? defaultProject)
   const [owner, setOwner] = useState<Owner>(initial.owner ?? currentUser)
   const [dueDate, setDueDate] = useState(initial.dueDate ?? '')
-  const [status, setStatus] = useState(initial.status ?? '')
+  const [status, setStatus] = useState(kind === 'lead' && initial.status ? canonicalLeadStage(initial.status as LeadStage) : initial.status ?? '')
   const [notes, setNotes] = useState(initial.notes ?? '')
   const [url, setUrl] = useState(initial.url ?? '')
   const [priority, setPriority] = useState<Priority>(initial.priority ?? 'normal')
@@ -1123,6 +1148,7 @@ function EntryModal({ state, currentUser, onClose, setToast, createProjectForCli
   const [source, setSource] = useState(initial.source ?? '')
   const [lastContactDate, setLastContactDate] = useState(initial.lastContactDate ?? '')
   const [nextAction, setNextAction] = useState(initial.nextAction ?? '')
+  const [projectToLink, setProjectToLink] = useState('')
   const [isDeliverable, setIsDeliverable] = useState(kind === 'deliverable')
   const [more, setMore] = useState(Boolean(initial.notes || initial.url))
   const [saving, setSaving] = useState(false)
@@ -1137,7 +1163,7 @@ function EntryModal({ state, currentUser, onClose, setToast, createProjectForCli
   useEffect(() => {
     if (!existing) return
     if (kind === 'lead') {
-      setTitle(existing.business); setOwner(existing.owner); setStatus(existing.stage)
+      setTitle(existing.business); setOwner(existing.owner); setStatus(canonicalLeadStage(existing.stage))
       setDueDate(existing.followUpDate ?? ''); setNotes(existing.notes ?? ''); setUrl(existing.website ?? '')
       setTariff(existing.tariff ?? ''); setQuoted(existing.quoted?.toString() ?? '')
       setContact(existing.contact ?? ''); setServiceInterest(existing.serviceInterest ?? ''); setSource(existing.source ?? '')
@@ -1165,6 +1191,11 @@ function EntryModal({ state, currentUser, onClose, setToast, createProjectForCli
     if (isEdit) return
     localStorage.setItem(draftKey, JSON.stringify({ title, projectId, owner, dueDate, status, notes, url, priority, linkType, tariff, quoted, contact, serviceInterest, source, lastContactDate, nextAction }))
   }, [draftKey, isEdit, title, projectId, owner, dueDate, status, notes, url, priority, linkType, tariff, quoted, contact, serviceInterest, source, lastContactDate, nextAction])
+
+  const unlinkedProjects = projects.filter((project) => !project.clientId)
+  useEffect(() => {
+    if (!projectToLink && unlinkedProjects.length === 1) setProjectToLink(unlinkedProjects[0].id)
+  }, [projectToLink, unlinkedProjects])
 
   const config = modalConfig(kind)
   const save = async (event: React.FormEvent) => {
@@ -1224,6 +1255,13 @@ function EntryModal({ state, currentUser, onClose, setToast, createProjectForCli
     onClose()
   }
 
+  const linkExistingProject = async () => {
+    if (!state.recordId || !projectToLink) return
+    await db.projects.update(projectToLink, { clientId: state.recordId, clientType: 'client', updatedAt: nowIso() })
+    setProjectToLink('')
+    setToast({ message: 'Project linked to this client.' })
+  }
+
   const showProject = kind !== 'lead'
   const showDate = kind !== 'note' && kind !== 'idea' && kind !== 'link'
   const showStatus = config.statuses.length > 0
@@ -1244,7 +1282,14 @@ function EntryModal({ state, currentUser, onClose, setToast, createProjectForCli
     {kind === 'lead' && (isEdit
       ? <PaymentsEditor leadId={state.recordId!} quoted={quoted ? Number(quoted) : undefined} currentUser={currentUser} setToast={setToast} />
       : <p className="payments-hint">Save the client first, then you can add deposits, installments, a retainer, or a revenue share.</p>)}
-    {kind === 'lead' && isEdit && <div className="linked-project-callout">{linkedProject ? <><span><strong>Linked project</strong><small>{linkedProject.name}</small></span><button type="button" className="secondary-button" onClick={() => openProject(linkedProject.id)}>Open project</button></> : <><span><strong>No delivery project yet</strong><small>Create one when this work is ready to deliver.</small></span><button type="button" className="secondary-button" onClick={() => createProjectForClient(state.recordId!)}>Create project</button></>}</div>}
+    {kind === 'lead' && isEdit && <div className="client-projects-callout">
+      <div className="client-projects-heading"><span><strong>Delivery project</strong><small>{linkedProjects.length ? 'The project holds the work. Financials stay here.' : 'Link the work you are already doing for this client.'}</small></span>{linkedProjects.length > 0 && <span className="client-project-count">{linkedProjects.length}</span>}</div>
+      {linkedProjects.map((project) => <button type="button" className="linked-project-row" key={project.id} onClick={() => openProject(project.id)}><span><strong>{project.name}</strong><small>{project.phase} · {project.status}</small></span><ChevronRight /></button>)}
+      {!linkedProjects.length && <div className="link-project-actions">
+        {unlinkedProjects.length > 0 && <><select aria-label="Existing project" value={projectToLink} onChange={(event) => setProjectToLink(event.target.value)}><option value="">Choose existing project</option>{unlinkedProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><button type="button" className="secondary-button" disabled={!projectToLink} onClick={linkExistingProject}>Link project</button></>}
+        <button type="button" className={unlinkedProjects.length ? 'text-button' : 'secondary-button'} onClick={() => createProjectForClient(state.recordId!)}><Plus /> New project</button>
+      </div>}
+    </div>}
     <button type="button" className="more-toggle" onClick={() => setMore(!more)}>{more ? 'Hide details' : 'More details'}<ChevronDown /></button>
     {more && <div className="more-fields">{kind === 'lead' && <div className="form-row"><label><span>Last contacted <small>optional</small></span><input type="date" value={lastContactDate} onChange={(e) => setLastContactDate(e.target.value)} /></label><label><span>Source <small>optional</small></span><input value={source} onChange={(e) => setSource(e.target.value)} placeholder="Referral, website…" /></label></div>}<label><span>{kind === 'note' || kind === 'idea' ? 'Text' : 'Notes'} <small>optional</small></span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} placeholder="Add only the context someone will need later." /></label>{(kind === 'task' || kind === 'milestone' || kind === 'deliverable' || kind === 'lead') && <label><span>{kind === 'lead' ? 'Website' : 'Drive link'} <small>optional</small></span><input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" /></label>}{kind === 'task' && <label><span>Priority</span><select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></select></label>}</div>}
     {error && <p className="form-error">{error}</p>}
@@ -1261,7 +1306,7 @@ function modalConfig(kind: ModalKind) {
   if (kind === 'milestone') return { ...common, singular: 'Step', label: 'plan step', placeholder: 'A meaningful stage in the plan', defaultStatus: 'not_started', statuses: milestoneStatuses.map((s) => [s, milestoneStatusLabels[s]] as [string, string]) }
   if (kind === 'deliverable') return { ...common, singular: 'Deliverable', label: 'deliverable', placeholder: 'Something the client receives', defaultStatus: 'not_started', statuses: milestoneStatuses.map((s) => [s, milestoneStatusLabels[s]] as [string, string]) }
   if (kind === 'link') return { ...common, singular: 'Link', label: 'link', titleLabel: 'Name', placeholder: 'What does this link open?' }
-  if (kind === 'lead') return { ...common, singular: 'Client', label: 'client', titleLabel: 'Business', placeholder: 'Business name', defaultStatus: 'prospect', statuses: (Object.entries(leadStageLabels) as [LeadStage, string][]).map(([value, label]) => [value, label] as [string, string]) }
+  if (kind === 'lead') return { ...common, singular: 'Client', label: 'client', titleLabel: 'Business', placeholder: 'Business name', defaultStatus: 'prospect', statuses: leadStageGroups.map((group) => [group.canonical, group.label] as [string, string]) }
   return common
 }
 
@@ -1492,7 +1537,7 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
       <label><span>Type</span><select value={clientType} onChange={(e) => setClientType(e.target.value as Project['clientType'])}><option value="client">Client project</option><option value="internal">Internal</option></select></label>
       <label><span>Phase <small>optional</small></span><input value={phase} onChange={(e) => setPhase(e.target.value)} placeholder="Foundation, Build…" /></label>
     </div>
-    {clientType === 'client' && <label><span>Client <small>optional</small></span><select value={clientId} onChange={(e) => setClientId(e.target.value)}><option value="">No linked client</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.business}</option>)}</select></label>}
+    {clientType === 'client' && <label><span>Linked client <small>financials live on the client</small></span><select value={clientId} onChange={(e) => setClientId(e.target.value)}><option value="">No linked client</option>{clients.sort((a, b) => Number(b.stage === 'won') - Number(a.stage === 'won') || a.business.localeCompare(b.business)).map((client) => <option key={client.id} value={client.id}>{client.business} — {leadStageLabels[client.stage]}</option>)}</select></label>}
     <label><span>Goal</span><textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={2} placeholder="What does done look like for this project?" /></label>
     <label><span>Current focus</span><input value={currentFocus} onChange={(e) => setCurrentFocus(e.target.value)} placeholder="The one thing you are pushing right now" /></label>
     <div className="form-row">

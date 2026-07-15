@@ -99,20 +99,25 @@ export const meetingStatusLabels: Record<MeetingItemStatus, string> = {
   open: 'Open', decision: 'Decision', action: 'Action', deferred: 'Deferred', closed: 'Closed'
 }
 
-// Keep each stored lead stage visible so users can understand and update the actual client state.
+// Pipeline stages describe a decision state, not every activity that happened. Older records
+// can still contain `replied` or `discovery`; both now appear as one calm "In conversation"
+// stage. Follow-up remains a next action/date instead of becoming another stage.
 export const leadStageLabels: Record<LeadStage, string> = {
-  prospect: 'New lead', contacted: 'Contacted', replied: 'Replied', discovery: 'Discovery', proposal: 'Proposal', won: 'Won', lost: 'Lost'
+  prospect: 'New lead', contacted: 'Contacted', replied: 'In conversation', discovery: 'In conversation', proposal: 'Proposal sent', won: 'Won', lost: 'Lost'
 }
 
 export const leadStageGroups: { key: string; label: string; stages: LeadStage[]; canonical: LeadStage }[] = [
   { key: 'prospect', label: 'New', stages: ['prospect'], canonical: 'prospect' },
   { key: 'contacted', label: 'Contacted', stages: ['contacted'], canonical: 'contacted' },
-  { key: 'replied', label: 'Replied', stages: ['replied'], canonical: 'replied' },
-  { key: 'discovery', label: 'Discovery', stages: ['discovery'], canonical: 'discovery' },
-  { key: 'proposal', label: 'Proposal', stages: ['proposal'], canonical: 'proposal' },
+  { key: 'conversation', label: 'Conversation', stages: ['replied', 'discovery'], canonical: 'replied' },
+  { key: 'proposal', label: 'Proposal sent', stages: ['proposal'], canonical: 'proposal' },
   { key: 'won', label: 'Won', stages: ['won'], canonical: 'won' },
   { key: 'lost', label: 'Lost', stages: ['lost'], canonical: 'lost' }
 ]
+
+export function canonicalLeadStage(stage: LeadStage): LeadStage {
+  return leadStageGroups.find((group) => group.stages.includes(stage))?.canonical ?? stage
+}
 
 /** Only allow http(s) links — blocks javascript:/data: URIs from stored link fields. */
 export function isSafeUrl(url?: string) {
