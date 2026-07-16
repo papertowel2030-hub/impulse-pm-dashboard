@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
-  Archive, CalendarDays, Check, ChevronDown, ChevronRight, CloudOff, Download, ExternalLink,
+  Archive, BarChart3, CalendarDays, Check, ChevronDown, ChevronRight, CloudOff, Download, ExternalLink,
   FileCheck2, FolderKanban, Home, Lightbulb, Link2, LogIn, LogOut, Menu, MessageSquareText, NotebookPen,
   Pencil, Plus, Repeat, Search, Settings, Star, Target, Trash2, Upload, UserPlus, Users, Wallet, X
 } from 'lucide-react'
@@ -9,12 +9,12 @@ import { db, cloudEnabled, newId, recordRealmId, getActiveRealmId, setActiveReal
 import { importWorkspaceFile } from './importData'
 import type {
   Lead, LeadStage, MeetingItem, MeetingItemStatus, Milestone, MilestoneStatus, ModalKind, Note,
-  Owner, Payment, PaymentKind, PaymentTiming, Priority, Project, ProjectTab, Resource, Task, TaskStatus, ViewName
+  Owner, Payment, PaymentKind, PaymentTiming, PerformanceChannel, PerformanceMonth, PerformanceProfile, Priority, Project, ProjectTab, Resource, Task, TaskStatus, ViewName
 } from './types'
 import {
-  activeMeetingStatus, addMonthsIso, daysSince, daysUntil, formatDate, formatMoney, fullDate, generateRecurring,
+  activeMeetingStatus, addMonthsIso, daysSince, daysUntil, formatCurrency, formatDate, formatMoney, formatPerformanceMonth, fullDate, generateRecurring,
   canonicalLeadStage, isOverdue, isSafeUrl, leadStageGroups, leadStageLabels, makeId, meetingStatusLabels, milestoneStatusLabels, nearestByDate, nextPayment,
-  nowIso, paymentTimingLabels, resolveWorkspaceRealmId, sumDue, sumReceived, taskStatusLabels
+  isCompletedMonth, latestCompletedMonthKey, nowIso, paymentTimingLabels, performanceNet, performanceProgress, performanceTotal, resolveWorkspaceRealmId, sumDue, sumReceived, taskStatusLabels
 } from './utils'
 
 const paymentTimings = Object.keys(paymentTimingLabels) as PaymentTiming[]
@@ -149,7 +149,7 @@ function useLoggedInIdentity(email?: string): Owner | undefined {
   return identity
 }
 
-const activityTables = ['tasks', 'notes', 'milestones', 'meetingItems', 'leads', 'payments', 'resources'] as const
+const activityTables = ['tasks', 'notes', 'milestones', 'meetingItems', 'leads', 'payments', 'performanceProfiles', 'performanceMonths', 'resources'] as const
 
 /**
  * Shows each invited partner's real status: whether they've accepted the invite (Dexie
@@ -432,6 +432,7 @@ export default function App() {
               openAdd={openQuickAdd}
               openProjectEdit={(id) => setProjectModal({ projectId: id })}
               openClient={(id) => setModal({ kind: 'lead', recordId: id })}
+              currentUser={currentUser}
               setToast={setToast}
             />
           )}
@@ -692,14 +693,20 @@ function EmptyState({ text, action }: { text: string; action?: React.ReactNode }
   return <div className="empty-state"><p>{text}</p>{action}</div>
 }
 
-function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, openAdd, openProjectEdit, openClient, setToast }: {
+function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, openAdd, openProjectEdit, openClient, currentUser, setToast }: {
   selectedProjectId: string; setSelectedProjectId: (id: string) => void; tab: ProjectTab; setTab: (tab: ProjectTab) => void;
-  openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openProjectEdit: (id: string) => void; openClient: (id: string) => void; setToast: (toast: ToastState) => void
+  openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openProjectEdit: (id: string) => void; openClient: (id: string) => void; currentUser: Owner; setToast: (toast: ToastState) => void
 }) {
   const projects = useLiveQuery(() => db.projects.filter((p) => !p.archivedAt && p.status !== 'archived').toArray(), [], [])
   const project = projects.find((item) => item.id === selectedProjectId) ?? projects[0]
+  const performanceProfile = useLiveQuery(() => project ? db.performanceProfiles.where('projectId').equals(project.id).filter((profile) => !profile.archivedAt).first() : undefined, [project?.id])
   if (!project) return <div className="page"><EmptyState text="No projects yet. Add one from the sidebar." /></div>
-  const tabLabels: Record<ProjectTab, string> = { overview: 'Overview', plan: 'Plan', board: 'Tasks', notes: 'Notes', links: 'Files & links' }
+  const tabs: { key: ProjectTab; label: string }[] = [
+    { key: 'overview', label: 'Overview' }, { key: 'plan', label: 'Plan' }, { key: 'board', label: 'Tasks' },
+    ...(performanceProfile ? [{ key: 'performance' as ProjectTab, label: 'Performance' }] : []),
+    { key: 'notes', label: 'Notes' }, { key: 'links', label: 'Files & links' }
+  ]
+  const activeTab = tab === 'performance' && !performanceProfile ? 'overview' : tab
   return <div className="page">
     <div className="project-switcher">
       {projects.sort((a, b) => a.order - b.order).map((item) => <button key={item.id} className={item.id === project.id ? 'active' : ''} onClick={() => { setSelectedProjectId(item.id); setTab('overview'); window.scrollTo({ top: 0 }) }}><span style={{ background: item.color }} />{item.name}</button>)}
@@ -712,17 +719,18 @@ function ProjectsView({ selectedProjectId, setSelectedProjectId, tab, setTab, op
       </div>
     </div>
     <nav className="subnav" aria-label="Project sections">
-      {(Object.keys(tabLabels) as ProjectTab[]).map((item) => <button key={item} onClick={() => setTab(item)} className={tab === item ? 'active' : ''}>{tabLabels[item]}</button>)}
+      {tabs.map((item) => <button key={item.key} onClick={() => setTab(item.key)} className={activeTab === item.key ? 'active' : ''}>{item.label}</button>)}
     </nav>
-    {tab === 'overview' && <ProjectOverview project={project} openAdd={openAdd} openClient={openClient} openProjectEdit={() => openProjectEdit(project.id)} />}
-    {tab === 'plan' && <PlanView project={project} openAdd={openAdd} setToast={setToast} />}
-    {tab === 'board' && <BoardView project={project} openAdd={openAdd} setToast={setToast} />}
-    {tab === 'notes' && <NotesView project={project} openAdd={openAdd} setToast={setToast} />}
-    {tab === 'links' && <LinksView project={project} openAdd={openAdd} />}
+    {activeTab === 'overview' && <ProjectOverview project={project} openAdd={openAdd} openClient={openClient} openProjectEdit={() => openProjectEdit(project.id)} openPerformance={() => setTab('performance')} />}
+    {activeTab === 'plan' && <PlanView project={project} openAdd={openAdd} setToast={setToast} />}
+    {activeTab === 'board' && <BoardView project={project} openAdd={openAdd} setToast={setToast} />}
+    {activeTab === 'performance' && performanceProfile && <PerformanceView project={project} profile={performanceProfile} currentUser={currentUser} openSettings={() => openProjectEdit(project.id)} setToast={setToast} />}
+    {activeTab === 'notes' && <NotesView project={project} openAdd={openAdd} setToast={setToast} />}
+    {activeTab === 'links' && <LinksView project={project} openAdd={openAdd} />}
   </div>
 }
 
-function ProjectOverview({ project, openAdd, openClient, openProjectEdit }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openClient: (id: string) => void; openProjectEdit: () => void }) {
+function ProjectOverview({ project, openAdd, openClient, openProjectEdit, openPerformance }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; openClient: (id: string) => void; openProjectEdit: () => void; openPerformance: () => void }) {
   const milestones = useLiveQuery(() => db.milestones.where('projectId').equals(project.id).filter((m) => !m.archivedAt).sortBy('position'), [project.id], [])
   const tasks = useLiveQuery(() => db.tasks.where('projectId').equals(project.id).filter((t) => !t.archivedAt && t.status !== 'done').toArray(), [project.id], [])
   const meetingItems = useLiveQuery(() => db.meetingItems.where('projectId').equals(project.id).filter((m) => !m.archivedAt && activeMeetingStatus(m.status)).toArray(), [project.id], [])
@@ -730,8 +738,13 @@ function ProjectOverview({ project, openAdd, openClient, openProjectEdit }: { pr
   const doneCount = milestones.filter((m) => m.status === 'done').length
   const client = useLiveQuery(() => project.clientId ? db.leads.get(project.clientId) : undefined, [project.clientId])
   const clientPayments = useLiveQuery(() => project.clientId ? db.payments.where('leadId').equals(project.clientId).filter((payment) => !payment.archivedAt).toArray() : [], [project.clientId], [])
+  const performanceProfile = useLiveQuery(() => db.performanceProfiles.where('projectId').equals(project.id).filter((profile) => !profile.archivedAt).first(), [project.id])
+  const performanceMonths = useLiveQuery(async () => (await db.performanceMonths.where('projectId').equals(project.id).filter((month) => !month.archivedAt).toArray()).sort((a, b) => b.month.localeCompare(a.month)), [project.id], [])
+  const latestPerformance = performanceMonths[0]
+  const latestTotal = latestPerformance ? performanceTotal(latestPerformance) : undefined
+  const latestProgress = latestTotal !== undefined ? performanceProgress(latestTotal, performanceProfile?.targetAmount) : undefined
   return <div className="project-overview">
-    <section className="goal-panel"><p className="eyebrow">Project goal</p><h2>{project.goal}</h2>{client ? <button className="project-client-link" onClick={() => openClient(client.id)}><Users /> {client.business}{clientPayments.length ? ` · ${formatMoney(sumReceived(clientPayments)) || '₽0'} received${sumDue(clientPayments) ? ` · ${formatMoney(sumDue(clientPayments))} due` : ''}` : ''}<ChevronRight /></button> : project.clientType === 'client' && <button className="project-client-link is-unlinked" onClick={openProjectEdit}><Link2 /> Link this project to a client<ChevronRight /></button>}{project.targetDate && <span><CalendarDays /> Target {fullDate(project.targetDate)}</span>}{milestones.length > 0 && <span><Check /> {doneCount} of {milestones.length} steps done</span>}</section>
+    <section className="goal-panel"><p className="eyebrow">Project goal</p><h2>{project.goal}</h2>{client ? <button className="project-client-link" onClick={() => openClient(client.id)}><Users /> {client.business}{clientPayments.length ? ` · ${formatMoney(sumReceived(clientPayments)) || '₽0'} received${sumDue(clientPayments) ? ` · ${formatMoney(sumDue(clientPayments))} due` : ''}` : ''}<ChevronRight /></button> : project.clientType === 'client' && <button className="project-client-link is-unlinked" onClick={openProjectEdit}><Link2 /> Link this project to a client<ChevronRight /></button>}{performanceProfile && <button className="project-performance-link" onClick={openPerformance}><BarChart3 /><span><small>Performance{latestPerformance ? ` · ${formatPerformanceMonth(latestPerformance.month)}` : ''}</small><strong>{latestTotal === undefined ? 'Add the first completed month' : `${formatCurrency(latestTotal, performanceProfile.currency)}${latestProgress !== undefined ? ` · ${Math.round(latestProgress)}% of target` : ''}`}</strong></span><ChevronRight /></button>}{project.targetDate && <span><CalendarDays /> Target {fullDate(project.targetDate)}</span>}{milestones.length > 0 && <span><Check /> {doneCount} of {milestones.length} steps done</span>}</section>
     <section className="overview-section">
       <SectionTitle title="Plan" action={<button onClick={() => openAdd('milestone', project.id)}><Plus /> Add step</button>} />
       <div className="milestone-path">{milestones.slice(0, 8).map((milestone, index) => <div key={milestone.id} className={`milestone-step ${milestone.status}`}><span>{milestone.status === 'done' ? <Check /> : index + 1}</span><p>{milestone.deliverable && <Star className="step-star" aria-label="Client deliverable" />}{milestone.title}</p></div>)}</div>
@@ -743,6 +756,140 @@ function ProjectOverview({ project, openAdd, openClient, openProjectEdit }: { pr
       <section><SectionTitle title="Meeting agenda" action={<button onClick={() => openAdd('discussion', project.id)}><Plus /> Add</button>} /><div className="simple-list">{meetingItems.slice(0, 3).map((item) => <div className="list-row is-actionable" key={item.id}><MessageSquareText /><span><button className="row-main" onClick={() => openAdd('discussion', project.id, item.id)}><strong>{item.title}</strong><small>{meetingStatusLabels[item.status]}</small></button></span><ChevronRight /></div>)}{!meetingItems.length && <EmptyState text="Nothing waiting for the meeting." />}</div></section>
     </div>
   </div>
+}
+
+const performanceColors = ['#2ee6ff', '#ffb86b', '#7aa2f7', '#5fe0a8', '#c3a6ff', '#ffd166', '#ff8585', '#93a7c4']
+
+function PerformanceView({ project, profile, currentUser, openSettings, setToast }: { project: Project; profile: PerformanceProfile; currentUser: Owner; openSettings: () => void; setToast: (toast: ToastState) => void }) {
+  const allMonths = useLiveQuery(async () => (await db.performanceMonths.where('projectId').equals(project.id).toArray()).sort((a, b) => b.month.localeCompare(a.month)), [project.id], [])
+  const months = allMonths.filter((month) => !month.archivedAt)
+  const archivedMonths = allMonths.filter((month) => month.archivedAt)
+  const [monthModal, setMonthModal] = useState<string | null | undefined>(undefined)
+  const latest = months[0]
+  const total = latest ? performanceTotal(latest) : undefined
+  const net = latest ? performanceNet(latest) : undefined
+  const progress = total !== undefined ? performanceProgress(total, profile.targetAmount) : undefined
+  const channels = [...profile.channels].sort((a, b) => a.position - b.position)
+  const visibleChannels = channels.filter((channel) => !channel.archivedAt || months.some((month) => (month.channelAmounts[channel.id] ?? 0) !== 0))
+
+  const archiveMonth = async (month: PerformanceMonth) => {
+    const stamp = nowIso()
+    await db.performanceMonths.update(month.id, { archivedAt: stamp, updatedAt: stamp, updatedBy: currentUser })
+    setToast({ message: `${formatPerformanceMonth(month.month)} archived.`, action: { label: 'Undo', run: () => db.performanceMonths.update(month.id, { archivedAt: undefined, updatedAt: nowIso(), updatedBy: currentUser }) } })
+  }
+  const restoreMonth = async (month: PerformanceMonth) => {
+    await db.performanceMonths.update(month.id, { archivedAt: undefined, updatedAt: nowIso(), updatedBy: currentUser })
+    setToast({ message: `${formatPerformanceMonth(month.month)} restored.` })
+  }
+
+  return <section className="performance-view">
+    <SectionTitle title="Monthly performance" action={<div className="section-actions"><button onClick={openSettings}><Settings /> Configure</button><button className="primary-button" onClick={() => setMonthModal(null)}><Plus /> Add month</button></div>} />
+    {!latest ? <EmptyState text="No completed months yet. Add the first verified monthly totals." action={<button className="primary-button" onClick={() => setMonthModal(null)}>Add completed month</button>} /> : <>
+      <div className="performance-period"><span>Latest completed month</span><strong>{formatPerformanceMonth(latest.month)}</strong></div>
+      <div className="performance-kpis">
+        <article><small>Total sales</small><strong>{formatCurrency(total, profile.currency)}</strong><p>{channels.filter((channel) => !channel.archivedAt).length} revenue {channels.filter((channel) => !channel.archivedAt).length === 1 ? 'channel' : 'channels'}</p></article>
+        <article><small>Recorded expenses</small><strong>{formatCurrency(latest.expenses, profile.currency)}</strong><p>Provided month-end total</p></article>
+        <article><small>Net</small><strong className={net !== undefined && net < 0 ? 'negative' : ''}>{formatCurrency(net, profile.currency)}</strong><p>Total sales minus recorded expenses</p></article>
+        {profile.targetAmount !== undefined && <article className="target-kpi"><small>{profile.targetLabel || 'Sales target'}</small><strong>{Math.round(progress ?? 0)}%</strong><div className="target-track"><span style={{ width: `${Math.min(100, progress ?? 0)}%` }} /></div><p>{formatCurrency(Math.max(0, profile.targetAmount - (total ?? 0)), profile.currency)} remaining</p></article>}
+      </div>
+      <div className="channel-summary" aria-label="Latest revenue by channel">
+        {channels.filter((channel) => !channel.archivedAt || (latest.channelAmounts[channel.id] ?? 0) !== 0).map((channel, index) => <div key={channel.id}><span style={{ background: performanceColors[index % performanceColors.length] }} /><small>{channel.label}</small><strong>{formatCurrency(latest.channelAmounts[channel.id] ?? 0, profile.currency)}</strong></div>)}
+      </div>
+      <PerformanceChart months={months} profile={profile} channels={visibleChannels} />
+      <div className="performance-history-head"><div><h3>Monthly history</h3><p>Verified totals only. Select a month to edit it.</p></div></div>
+      <div className="performance-table-wrap"><table className="performance-table">
+        <thead><tr><th>Month</th>{visibleChannels.map((channel) => <th key={channel.id}>{channel.label}</th>)}<th>Total</th><th>Expenses</th><th>Net</th><th><span className="sr-only">Actions</span></th></tr></thead>
+        <tbody>{months.map((month) => <tr key={month.id}><th><button onClick={() => setMonthModal(month.id)}>{formatPerformanceMonth(month.month)}</button></th>{visibleChannels.map((channel) => <td key={channel.id}>{formatCurrency(month.channelAmounts[channel.id] ?? 0, profile.currency)}</td>)}<td><strong>{formatCurrency(performanceTotal(month), profile.currency)}</strong></td><td>{formatCurrency(month.expenses, profile.currency)}</td><td className={performanceNet(month) < 0 ? 'negative' : ''}>{formatCurrency(performanceNet(month), profile.currency)}</td><td><button className="icon-button" aria-label={`Archive ${formatPerformanceMonth(month.month)}`} onClick={() => archiveMonth(month)}><Archive /></button></td></tr>)}</tbody>
+      </table></div>
+    </>}
+    {archivedMonths.length > 0 && <details className="archived-performance"><summary>Archived months ({archivedMonths.length})</summary><div>{archivedMonths.map((month) => <button key={month.id} onClick={() => restoreMonth(month)}><span><strong>{formatPerformanceMonth(month.month)}</strong><small>{formatCurrency(performanceTotal(month), profile.currency)} total</small></span><Repeat /> Restore</button>)}</div></details>}
+    {monthModal !== undefined && <PerformanceMonthModal project={project} profile={profile} months={allMonths} recordId={monthModal ?? undefined} currentUser={currentUser} onClose={() => setMonthModal(undefined)} setToast={setToast} />}
+  </section>
+}
+
+function PerformanceChart({ months, profile, channels }: { months: PerformanceMonth[]; profile: PerformanceProfile; channels: PerformanceChannel[] }) {
+  const rows = [...months].sort((a, b) => a.month.localeCompare(b.month)).slice(-12)
+  if (!rows.length) return null
+  const width = 900
+  const height = 300
+  const left = 58
+  const right = 18
+  const top = 24
+  const bottom = 48
+  const chartHeight = height - top - bottom
+  const chartWidth = width - left - right
+  const values = rows.map(performanceTotal)
+  const maximum = Math.max(1, profile.targetAmount ?? 0, ...values) * 1.08
+  const slot = chartWidth / rows.length
+  const barWidth = Math.min(52, slot * .62)
+  const y = (value: number) => top + chartHeight - (value / maximum) * chartHeight
+  const compact = (value: number) => new Intl.NumberFormat('en-GB', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+  const shortMonth = (month: string) => new Intl.DateTimeFormat('en-GB', { month: 'short', year: '2-digit' }).format(new Date(`${month}-01T00:00:00`)).replace(' ', " ’")
+
+  return <figure className="performance-chart">
+    <figcaption><div><h3>Sales by channel</h3><p>Last {rows.length} completed {rows.length === 1 ? 'month' : 'months'}</p></div><div className="chart-legend">{channels.map((channel, index) => <span key={channel.id}><i style={{ background: performanceColors[index % performanceColors.length] }} />{channel.label}</span>)}{profile.targetAmount !== undefined && <span><i className="target-line-key" />{profile.targetLabel || 'Sales target'}</span>}</div></figcaption>
+    <div className="chart-scroll"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Stacked monthly sales chart">
+      {[0, .5, 1].map((ratio) => { const value = maximum * ratio; const lineY = y(value); return <g key={ratio}><line x1={left} y1={lineY} x2={width - right} y2={lineY} className="chart-grid-line" /><text x={left - 10} y={lineY + 4} textAnchor="end" className="chart-axis-label">{compact(value)}</text></g> })}
+      {rows.map((month, rowIndex) => {
+        const x = left + slot * rowIndex + (slot - barWidth) / 2
+        let running = 0
+        return <g key={month.id}>{channels.map((channel, channelIndex) => {
+          const amount = month.channelAmounts[channel.id] ?? 0
+          const segmentHeight = (amount / maximum) * chartHeight
+          const segmentY = y(running + amount)
+          running += amount
+          return <rect key={channel.id} x={x} y={segmentY} width={barWidth} height={segmentHeight} fill={performanceColors[channelIndex % performanceColors.length]} rx={channelIndex === channels.length - 1 ? 3 : 0}><title>{channel.label}: {formatCurrency(amount, profile.currency)}</title></rect>
+        })}<text x={x + barWidth / 2} y={height - 18} textAnchor="middle" className="chart-month-label">{shortMonth(month.month)}</text></g>
+      })}
+      {profile.targetAmount !== undefined && <g><line x1={left} y1={y(profile.targetAmount)} x2={width - right} y2={y(profile.targetAmount)} className="chart-target-line" /><text x={width - right} y={Math.max(14, y(profile.targetAmount) - 7)} textAnchor="end" className="chart-target-label">{profile.targetLabel || 'Target'} · {compact(profile.targetAmount)}</text></g>}
+    </svg></div>
+  </figure>
+}
+
+function PerformanceMonthModal({ project, profile, months, recordId, currentUser, onClose, setToast }: { project: Project; profile: PerformanceProfile; months: PerformanceMonth[]; recordId?: string; currentUser: Owner; onClose: () => void; setToast: (toast: ToastState) => void }) {
+  const initial = months.find((item) => item.id === recordId)
+  const defaultMonth = initial?.month ?? latestCompletedMonthKey()
+  const startingRecord = initial ?? months.find((item) => item.month === defaultMonth)
+  const [effectiveId, setEffectiveId] = useState(startingRecord?.id)
+  const [month, setMonth] = useState(defaultMonth)
+  const [amounts, setAmounts] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(startingRecord?.channelAmounts ?? {}).map(([id, value]) => [id, String(value)])))
+  const [expenses, setExpenses] = useState(startingRecord ? String(startingRecord.expenses) : '')
+  const [error, setError] = useState('')
+  const dialogRef = useRef<HTMLElement>(null)
+  useDialogBehavior(dialogRef, onClose)
+  const channels = [...profile.channels].sort((a, b) => a.position - b.position).filter((channel) => !channel.archivedAt || Object.hasOwn(startingRecord?.channelAmounts ?? {}, channel.id))
+
+  const changeMonth = (value: string) => {
+    setMonth(value); setError('')
+    const existing = months.find((item) => item.month === value)
+    setEffectiveId(existing?.id)
+    setAmounts(Object.fromEntries(Object.entries(existing?.channelAmounts ?? {}).map(([id, amount]) => [id, String(amount)])))
+    setExpenses(existing ? String(existing.expenses) : '')
+  }
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!isCompletedMonth(month)) return setError('Choose a completed calendar month.')
+    const channelAmounts = Object.fromEntries(channels.map((channel) => [channel.id, amounts[channel.id] === '' || amounts[channel.id] === undefined ? 0 : Number(amounts[channel.id])]))
+    if (Object.values(channelAmounts).some((value) => !Number.isFinite(value) || value < 0)) return setError('Sales amounts must be zero or greater.')
+    const expenseValue = expenses === '' ? 0 : Number(expenses)
+    if (!Number.isFinite(expenseValue) || expenseValue < 0) return setError('Expenses must be zero or greater.')
+    const stamp = nowIso()
+    try {
+      if (effectiveId) await db.performanceMonths.update(effectiveId, { month, channelAmounts, expenses: expenseValue, archivedAt: undefined, updatedAt: stamp, updatedBy: currentUser })
+      else await db.performanceMonths.add({ id: newId('performanceMonths', 'performance-month'), realmId: recordRealmId(), projectId: project.id, month, channelAmounts, expenses: expenseValue, createdAt: stamp, updatedAt: stamp, createdBy: currentUser })
+      setToast({ message: `${formatPerformanceMonth(month)} performance saved.` })
+      onClose()
+    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Could not save this month.') }
+  }
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="performance-month-title"><header><div><p className="eyebrow">Verified totals</p><h2 id="performance-month-title">{effectiveId ? 'Edit completed month' : 'Add completed month'}</h2></div><button onClick={onClose} aria-label="Close"><X /></button></header><form onSubmit={save}>
+    <label><span>Month</span><input type="month" max={latestCompletedMonthKey()} value={month} onChange={(event) => changeMonth(event.target.value)} required /></label>
+    <div className="performance-entry-fields">{channels.map((channel) => <label key={channel.id}><span>{channel.label}{channel.archivedAt && <small> · archived channel</small>}</span><div className="money-input"><span>{profile.currency}</span><input type="number" min="0" step="0.01" inputMode="decimal" value={amounts[channel.id] ?? ''} onChange={(event) => setAmounts({ ...amounts, [channel.id]: event.target.value })} placeholder="0" /></div></label>)}</div>
+    <label><span>Recorded expenses</span><div className="money-input"><span>{profile.currency}</span><input type="number" min="0" step="0.01" inputMode="decimal" value={expenses} onChange={(event) => setExpenses(event.target.value)} placeholder="0" /></div></label>
+    <p className="form-hint">Total sales and Net are calculated automatically. Net means total sales minus recorded expenses.</p>
+    {error && <p className="form-error">{error}</p>}
+    <footer><span className="footer-spacer" /><button type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Save month</button></footer>
+  </form></section></div>
 }
 
 function PlanView({ project, openAdd, setToast }: { project: Project; openAdd: (kind: Exclude<ModalKind, null>, projectId?: string, recordId?: string) => void; setToast: (toast: ToastState) => void }) {
@@ -1462,6 +1609,7 @@ function PaymentForm({ kind, leadId, startPosition, currentUser, onDone, setToas
 
 function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { state: ProjectModalState; currentUser: Owner; onClose: () => void; setToast: (toast: ToastState) => void; openProject: (id: string) => void }) {
   const existing = useLiveQuery(() => state.projectId ? db.projects.get(state.projectId) : undefined, [state.projectId])
+  const performanceProfile = useLiveQuery(() => state.projectId ? db.performanceProfiles.where('projectId').equals(state.projectId).first() : undefined, [state.projectId])
   const clients = useLiveQuery(() => db.leads.filter((lead) => !lead.archivedAt).toArray(), [], [])
   const sourceClient = clients.find((client) => client.id === state.clientId)
   const isEdit = Boolean(state.projectId)
@@ -1474,6 +1622,11 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
   const [driveFolderUrl, setDriveFolderUrl] = useState('')
   const [color, setColor] = useState(projectColors[1])
   const [clientId, setClientId] = useState(state.clientId ?? '')
+  const [performanceEnabled, setPerformanceEnabled] = useState(false)
+  const [performanceCurrency, setPerformanceCurrency] = useState('RUB')
+  const [performanceTarget, setPerformanceTarget] = useState('')
+  const [performanceTargetLabel, setPerformanceTargetLabel] = useState('')
+  const [performanceChannels, setPerformanceChannels] = useState<PerformanceChannel[]>([{ id: makeId('channel'), label: '', position: 1 }])
   const [error, setError] = useState('')
   const nameInput = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLElement>(null)
@@ -1487,6 +1640,15 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
     setDriveFolderUrl(existing.driveFolderUrl ?? ''); setColor(existing.color); setClientId(existing.clientId ?? '')
   }, [existing])
   useEffect(() => {
+    if (!existing) return
+    if (!performanceProfile) { setPerformanceEnabled(false); return }
+    setPerformanceEnabled(!performanceProfile.archivedAt)
+    setPerformanceCurrency(performanceProfile.currency)
+    setPerformanceTarget(performanceProfile.targetAmount?.toString() ?? '')
+    setPerformanceTargetLabel(performanceProfile.targetLabel ?? '')
+    setPerformanceChannels([...performanceProfile.channels].sort((a, b) => a.position - b.position))
+  }, [existing, performanceProfile])
+  useEffect(() => {
     if (isEdit || !sourceClient) return
     setName(sourceClient.business); setClientType('client'); setClientId(sourceClient.id)
     setGoal(`Deliver ${sourceClient.serviceInterest || sourceClient.tariff || 'the agreed work'} successfully for ${sourceClient.business}.`)
@@ -1497,12 +1659,30 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
     event.preventDefault()
     if (!name.trim()) return setError('Give the project a name.')
     if (driveFolderUrl.trim() && !isSafeUrl(driveFolderUrl.trim())) return setError('Only http:// or https:// links are allowed.')
+    const activePerformanceChannels = performanceChannels.filter((channel) => !channel.archivedAt)
+    if (isEdit && performanceEnabled && !/^[A-Za-z]{3}$/.test(performanceCurrency.trim())) return setError('Use a three-letter currency code such as RUB, USD or EUR.')
+    if (isEdit && performanceEnabled && (!activePerformanceChannels.length || activePerformanceChannels.some((channel) => !channel.label.trim()))) return setError('Give every active revenue channel a name.')
+    if (isEdit && performanceEnabled && new Set(activePerformanceChannels.map((channel) => channel.label.trim().toLowerCase())).size !== activePerformanceChannels.length) return setError('Revenue channel names must be unique.')
+    if (isEdit && performanceEnabled && performanceTarget && !(Number(performanceTarget) > 0)) return setError('The optional target must be greater than zero.')
     if (cloudEnabled && !state.projectId && !getActiveRealmId()) return setError('Still connecting to the workspace. Try again in a moment.')
     const stamp = nowIso()
     const data = { name: name.trim(), clientId: clientType === 'client' ? clientId || undefined : undefined, clientType, phase: phase.trim() || (clientType === 'internal' ? 'Operations' : 'Getting started'), goal: goal.trim(), currentFocus: currentFocus.trim(), targetDate: targetDate || undefined, driveFolderUrl: driveFolderUrl || undefined, color, updatedAt: stamp }
     try {
       if (isEdit) {
         await db.projects.update(state.projectId!, data)
+        if (performanceEnabled) {
+          const profileData = {
+            projectId: state.projectId!, currency: performanceCurrency.trim().toUpperCase(),
+            targetAmount: performanceTarget ? Number(performanceTarget) : undefined,
+            targetLabel: performanceTarget ? performanceTargetLabel.trim() || 'Sales target' : undefined,
+            channels: performanceChannels.map((channel, index) => ({ ...channel, label: channel.label.trim(), position: index + 1 })),
+            archivedAt: undefined, updatedAt: stamp, updatedBy: currentUser
+          }
+          if (performanceProfile) await db.performanceProfiles.update(performanceProfile.id, profileData)
+          else await db.performanceProfiles.add({ id: newId('performanceProfiles', 'performance-profile'), realmId: recordRealmId(), ...profileData, createdAt: stamp, createdBy: currentUser })
+        } else if (performanceProfile && !performanceProfile.archivedAt) {
+          await db.performanceProfiles.update(performanceProfile.id, { archivedAt: stamp, updatedAt: stamp, updatedBy: currentUser })
+        }
         setToast({ message: 'Project updated.' })
       } else {
         const count = await db.projects.count()
@@ -1525,7 +1705,7 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
 
   const deleteProject = async () => {
     if (!state.projectId || !existing) return
-    if (!window.confirm(`Permanently delete "${existing.name}"? This removes its plan, tasks, notes and links for good. This cannot be undone.`)) return
+    if (!window.confirm(`Permanently delete "${existing.name}"? This removes its plan, tasks, notes, performance history and links for good. This cannot be undone.`)) return
     await deleteProjectPermanently(state.projectId)
     setToast({ message: `${existing.name} permanently deleted.` })
     onClose()
@@ -1545,6 +1725,16 @@ function ProjectModal({ state, currentUser, onClose, setToast, openProject }: { 
       <label><span>Drive folder <small>optional</small></span><input type="url" value={driveFolderUrl} onChange={(e) => setDriveFolderUrl(e.target.value)} placeholder="https://" /></label>
     </div>
     <div className="swatch-field"><span>Colour</span><div className="swatches" role="radiogroup" aria-label="Project colour">{projectColors.map((item) => <button type="button" key={item} className={`swatch ${color === item ? 'selected' : ''}`} style={{ background: item }} aria-label={`Colour ${item}`} onClick={() => setColor(item)}>{color === item && <Check />}</button>)}</div></div>
+    {isEdit && <div className="performance-config">
+      <label className="check-label"><input type="checkbox" checked={performanceEnabled} onChange={(event) => setPerformanceEnabled(event.target.checked)} /><span>Track monthly performance<small>Add a private Performance tab for verified month-end figures.</small></span></label>
+      {performanceEnabled && <div className="performance-config-fields">
+        <div className="form-row"><label><span>Currency</span><input value={performanceCurrency} onChange={(event) => setPerformanceCurrency(event.target.value.toUpperCase().slice(0, 3))} maxLength={3} placeholder="RUB" /></label><label><span>Target amount <small>optional</small></span><input type="number" min="0" step="0.01" value={performanceTarget} onChange={(event) => setPerformanceTarget(event.target.value)} placeholder="0" /></label></div>
+        {performanceTarget && <label><span>Target label</span><input value={performanceTargetLabel} onChange={(event) => setPerformanceTargetLabel(event.target.value)} placeholder="Month 6 target" /></label>}
+        <div className="channel-config"><div className="channel-config-head"><span>Revenue channels</span><button type="button" onClick={() => setPerformanceChannels([...performanceChannels, { id: makeId('channel'), label: '', position: performanceChannels.length + 1 }])}><Plus /> Add channel</button></div>
+          {performanceChannels.map((channel, index) => <div className={`channel-config-row ${channel.archivedAt ? 'archived' : ''}`} key={channel.id}><span className="channel-number">{index + 1}</span><input value={channel.label} disabled={Boolean(channel.archivedAt)} onChange={(event) => setPerformanceChannels(performanceChannels.map((item) => item.id === channel.id ? { ...item, label: event.target.value } : item))} placeholder="Store, Delivery, Online…" />{channel.archivedAt ? <button type="button" onClick={() => setPerformanceChannels(performanceChannels.map((item) => item.id === channel.id ? { ...item, archivedAt: undefined } : item))}><Repeat /> Restore</button> : <button type="button" aria-label={`Archive ${channel.label || 'channel'}`} onClick={() => setPerformanceChannels(channel.label ? performanceChannels.map((item) => item.id === channel.id ? { ...item, archivedAt: nowIso() } : item) : performanceChannels.filter((item) => item.id !== channel.id))}><Archive /></button>}</div>)}
+        </div>
+      </div>}
+    </div>}
     {error && <p className="form-error">{error}</p>}
     <footer>{isEdit && !existing?.archivedAt && <button type="button" className="danger-link" onClick={archiveProject}>Archive project</button>}{isEdit && existing?.archivedAt && <button type="button" className="danger-link" onClick={deleteProject}>Delete permanently</button>}<span className="footer-spacer" /><button type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{isEdit ? 'Save project' : 'Create project'}</button></footer>
   </form></section></div>

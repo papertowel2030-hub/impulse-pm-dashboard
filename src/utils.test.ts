@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activeMeetingStatus, addMonthsIso, canonicalLeadStage, daysUntil, formatMoney, fullDate, generateRecurring, leadStageLabels, nearestByDate, nextPayment, PUBLIC_REALM_ID, resolveWorkspaceRealmId, similarTitles, sumDue, sumReceived, taskStatusLabels } from './utils'
+import { activeMeetingStatus, addMonthsIso, canonicalLeadStage, daysUntil, formatCurrency, formatMoney, fullDate, generateRecurring, isCompletedMonth, latestCompletedMonthKey, leadStageLabels, nearestByDate, nextPayment, performanceNet, performanceProgress, performanceTotal, PUBLIC_REALM_ID, resolveWorkspaceRealmId, similarTitles, sumDue, sumReceived, taskStatusLabels } from './utils'
 import type { Payment } from './types'
 
 const pay = (over: Partial<Payment>): Payment => ({
@@ -41,6 +41,27 @@ describe('dashboard helpers', () => {
   it('formats roubles for the money view', () => {
     expect(formatMoney(25000)).toBe(`₽${new Intl.NumberFormat('ru-RU').format(25000)}`)
     expect(formatMoney(undefined)).toBe('')
+  })
+
+  it('calculates monthly performance totals, net and uncapped target progress', () => {
+    const month = { channelAmounts: { store: 100000, delivery: 50000 }, expenses: 170000 }
+    expect(performanceTotal(month)).toBe(150000)
+    expect(performanceNet(month)).toBe(-20000)
+    expect(performanceProgress(150000, 100000)).toBe(150)
+    expect(performanceProgress(150000)).toBeUndefined()
+  })
+
+  it('formats project money with a configurable currency', () => {
+    expect(formatCurrency(1234, 'USD')).toBe(new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(1234))
+    expect(formatCurrency(250000, 'RUB')).toBe(new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(250000))
+  })
+
+  it('accepts only finished calendar months', () => {
+    const now = new Date(2026, 6, 16)
+    expect(latestCompletedMonthKey(now)).toBe('2026-06')
+    expect(isCompletedMonth('2026-06', now)).toBe(true)
+    expect(isCompletedMonth('2026-07', now)).toBe(false)
+    expect(isCompletedMonth('2026-13', now)).toBe(false)
   })
 
   it('formats Dexie Cloud invitation timestamps without crashing Settings', () => {

@@ -1,4 +1,4 @@
-import type { DeliverableStatus, LeadStage, MeetingItemStatus, MilestoneStatus, Payment, PaymentKind, PaymentTiming, TaskStatus } from './types'
+import type { DeliverableStatus, LeadStage, MeetingItemStatus, MilestoneStatus, Payment, PaymentKind, PaymentTiming, PerformanceMonth, TaskStatus } from './types'
 
 // The old hardcoded realm id. It was never a real Dexie Cloud realm, so records tagged with
 // it never synced. Kept only to find and migrate those orphaned local records into the real
@@ -145,6 +145,43 @@ export function similarTitles(a: string, b: string) {
 export function formatMoney(value?: number) {
   if (value === undefined || value === null || Number.isNaN(value)) return ''
   return `₽${new Intl.NumberFormat('ru-RU').format(value)}`
+}
+
+export function formatCurrency(value: number | undefined, currency: string) {
+  if (value === undefined || value === null || Number.isNaN(value)) return ''
+  try {
+    const code = currency.toUpperCase()
+    return new Intl.NumberFormat(code === 'RUB' ? 'ru-RU' : 'en-GB', { style: 'currency', currency: code, minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(value)
+  } catch {
+    return `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value)} ${currency.toUpperCase()}`
+  }
+}
+
+export function performanceTotal(month: Pick<PerformanceMonth, 'channelAmounts'>) {
+  return Object.values(month.channelAmounts).reduce((total, amount) => total + (Number.isFinite(amount) ? amount : 0), 0)
+}
+
+export function performanceNet(month: Pick<PerformanceMonth, 'channelAmounts' | 'expenses'>) {
+  return performanceTotal(month) - (Number.isFinite(month.expenses) ? month.expenses : 0)
+}
+
+export function performanceProgress(total: number, target?: number) {
+  return target && target > 0 ? (total / target) * 100 : undefined
+}
+
+export function latestCompletedMonthKey(now = new Date()) {
+  const previous = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  return `${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`
+}
+
+export function isCompletedMonth(month: string, now = new Date()) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return false
+  return month <= latestCompletedMonthKey(now)
+}
+
+export function formatPerformanceMonth(month: string) {
+  if (!/^\d{4}-\d{2}$/.test(month)) return month
+  return new Intl.DateTimeFormat('en-GB', { month: 'short', year: 'numeric' }).format(new Date(`${month}-01T00:00:00`))
 }
 
 export function nearestByDate<T extends { dueDate?: string }>(items: T[]) {

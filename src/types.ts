@@ -141,6 +141,30 @@ export interface Resource extends BaseRecord {
   notes?: string
 }
 
+export interface PerformanceChannel {
+  id: string
+  label: string
+  position: number
+  archivedAt?: string
+}
+
+/** One optional performance configuration per project. An unarchived profile enables the feature. */
+export interface PerformanceProfile extends BaseRecord {
+  projectId: string
+  currency: string
+  targetAmount?: number
+  targetLabel?: string
+  channels: PerformanceChannel[]
+}
+
+/** Verified totals for one completed calendar month. */
+export interface PerformanceMonth extends BaseRecord {
+  projectId: string
+  month: string
+  channelAmounts: Record<string, number>
+  expenses: number
+}
+
 export interface BackupExport extends BaseRecord {
   exportedAt: string
   exportedBy: Owner
@@ -150,4 +174,4 @@ export interface BackupExport extends BaseRecord {
 
 export type ModalKind = 'task' | 'note' | 'idea' | 'discussion' | 'milestone' | 'deliverable' | 'lead' | 'link' | null
 export type ViewName = 'home' | 'projects' | 'sales' | 'meeting' | 'settings'
-export type ProjectTab = 'overview' | 'plan' | 'board' | 'notes' | 'links'
+export type ProjectTab = 'overview' | 'plan' | 'board' | 'notes' | 'links' | 'performance'

@@ -9,6 +9,8 @@ import type {
   Milestone,
   Note,
   Payment,
+  PerformanceMonth,
+  PerformanceProfile,
   Project,
   Resource,
   Task
@@ -38,13 +40,15 @@ class ImpulseDB extends Dexie {
   meetingItems!: EntityTable<MeetingItem, 'id'>
   leads!: EntityTable<Lead, 'id'>
   payments!: EntityTable<Payment, 'id'>
+  performanceProfiles!: EntityTable<PerformanceProfile, 'id'>
+  performanceMonths!: EntityTable<PerformanceMonth, 'id'>
   resources!: EntityTable<Resource, 'id'>
   backupExports!: EntityTable<BackupExport, 'id'>
 
   constructor() {
     super('ImpulseCommandCenter', { addons: cloudEnabled ? [dexieCloud] : [] })
     const primaryKey = cloudEnabled ? '@id' : 'id'
-    this.version(1).stores({
+    const coreStores = {
       projects: `${primaryKey}, realmId, status, clientType, serviceType, order, targetDate, updatedAt, archivedAt`,
       milestones: `${primaryKey}, realmId, projectId, status, dueDate, position, updatedAt, archivedAt`,
       deliverables: `${primaryKey}, realmId, projectId, status, owner, dueDate, updatedAt, archivedAt`,
@@ -56,6 +60,12 @@ class ImpulseDB extends Dexie {
       payments: `${primaryKey}, realmId, leadId, kind, status, dueDate, groupId, updatedAt, archivedAt`,
       resources: `${primaryKey}, realmId, projectId, type, owner, updatedAt, archivedAt`,
       backupExports: `${primaryKey}, realmId, exportedAt, exportedBy`
+    }
+    this.version(1).stores(coreStores)
+    this.version(2).stores({
+      ...coreStores,
+      performanceProfiles: `${primaryKey}, realmId, &projectId, updatedAt, archivedAt`,
+      performanceMonths: `${primaryKey}, realmId, projectId, month, &[projectId+month], updatedAt, archivedAt`
     })
 
     if (cloudEnabled && cloudUrl) {
@@ -127,7 +137,7 @@ export async function createWorkspaceRealm(): Promise<string> {
  * tables entirely: with no legacy data anywhere, this does nothing and creates no mutations.
  */
 export async function restampLegacyRealm(newRealmId: string) {
-  const tables = [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetings, db.meetingItems, db.leads, db.payments, db.resources] as unknown as Table<any>[]
+  const tables = [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetings, db.meetingItems, db.leads, db.payments, db.performanceProfiles, db.performanceMonths, db.resources] as unknown as Table<any>[]
   const legacyCounts = await Promise.all(tables.map((table) => table.where('realmId').equals(LEGACY_REALM_ID).count()))
   const toMigrate = tables.filter((_, index) => legacyCounts[index] > 0)
   if (!toMigrate.length) return
@@ -253,7 +263,7 @@ export async function convertPaidToPayments() {
 export async function deleteProjectPermanently(projectId: string) {
   await db.transaction(
     'rw',
-    [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetingItems, db.resources],
+    [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetingItems, db.performanceProfiles, db.performanceMonths, db.resources],
     async () => {
       await Promise.all([
         db.milestones.where('projectId').equals(projectId).delete(),
@@ -261,6 +271,8 @@ export async function deleteProjectPermanently(projectId: string) {
         db.tasks.where('projectId').equals(projectId).delete(),
         db.notes.where('projectId').equals(projectId).delete(),
         db.meetingItems.where('projectId').equals(projectId).delete(),
+        db.performanceProfiles.where('projectId').equals(projectId).delete(),
+        db.performanceMonths.where('projectId').equals(projectId).delete(),
         db.resources.where('projectId').equals(projectId).delete()
       ])
       await db.projects.delete(projectId)
@@ -281,11 +293,11 @@ export async function resetLocalData() {
 export async function clearLocalData() {
   await db.transaction(
     'rw',
-    [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetings, db.meetingItems, db.leads, db.payments, db.resources, db.backupExports],
+    [db.projects, db.milestones, db.deliverables, db.tasks, db.notes, db.meetings, db.meetingItems, db.leads, db.payments, db.performanceProfiles, db.performanceMonths, db.resources, db.backupExports],
     async () => {
       await Promise.all([
         db.projects.clear(), db.milestones.clear(), db.deliverables.clear(), db.tasks.clear(), db.notes.clear(),
-        db.meetings.clear(), db.meetingItems.clear(), db.leads.clear(), db.payments.clear(), db.resources.clear(), db.backupExports.clear()
+        db.meetings.clear(), db.meetingItems.clear(), db.leads.clear(), db.payments.clear(), db.performanceProfiles.clear(), db.performanceMonths.clear(), db.resources.clear(), db.backupExports.clear()
       ])
     }
   )
