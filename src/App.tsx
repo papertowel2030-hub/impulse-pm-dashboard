@@ -1487,7 +1487,7 @@ function PaymentsEditor({ leadId, quoted, currentUser, setToast }: { leadId: str
   return <div className="payments-editor">
     <div className="payments-head"><span>Payments</span><span className="payments-summary">{formatMoney(received) || '₽0'} received{outstanding ? ` · ${formatMoney(outstanding)} outstanding` : due > 0 ? ` · ${formatMoney(due)} due` : ''}</span></div>
     <div className="payment-rows">
-      {singles.map((p) => <PaymentRow key={p.id} payment={p} onToggle={() => togglePaid(p)} onRemove={() => removeOne(p)} />)}
+      {singles.map((p) => <PaymentRow key={p.id} payment={p} currentUser={currentUser} onToggle={() => togglePaid(p)} onRemove={() => removeOne(p)} />)}
       {[...groups.values()].map((rows) => {
         const first = rows[0]
         const label = first.label.split(' — ')[0]
@@ -1502,7 +1502,7 @@ function PaymentsEditor({ leadId, quoted, currentUser, setToast }: { leadId: str
             </button>
             <button type="button" aria-label={`Remove ${label}`} className="pay-remove" onClick={() => removeGroup(rows)}><Trash2 /></button>
           </div>
-          {open && <div className="payment-group-rows">{rows.map((p) => <PaymentRow key={p.id} payment={p} compact onToggle={() => togglePaid(p)} onRemove={() => removeOne(p)} />)}</div>}
+          {open && <div className="payment-group-rows">{rows.map((p) => <PaymentRow key={p.id} payment={p} currentUser={currentUser} compact onToggle={() => togglePaid(p)} onRemove={() => removeOne(p)} />)}</div>}
         </div>
       })}
       {!payments.length && <p className="payments-empty">No payments yet. Add a deposit, an installment, a retainer, or a share.</p>}
@@ -1517,24 +1517,75 @@ function PaymentsEditor({ leadId, quoted, currentUser, setToast }: { leadId: str
   </div>
 }
 
-function PaymentRow({ payment, onToggle, onRemove, compact }: { payment: Payment; onToggle: () => void; onRemove: () => void; compact?: boolean }) {
+function PaymentRow({ payment, currentUser, onToggle, onRemove, compact }: { payment: Payment; currentUser: Owner; onToggle: () => void; onRemove: () => void; compact?: boolean }) {
+  const [editing, setEditing] = useState(false)
+  const [label, setLabel] = useState(payment.label)
   const [amount, setAmount] = useState(payment.amount?.toString() ?? '')
-  useEffect(() => { setAmount(payment.amount?.toString() ?? '') }, [payment.amount])
-  const timing = payment.dueDate ? formatDate(payment.dueDate) : payment.timing && payment.timing !== 'date' ? paymentTimingLabels[payment.timing] : ''
+  const [percent, setPercent] = useState(payment.percent?.toString() ?? '')
+  const [timing, setTiming] = useState<PaymentTiming>(payment.dueDate ? 'date' : payment.timing ?? 'date')
+  const [dueDate, setDueDate] = useState(payment.dueDate ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const displayTiming = payment.dueDate ? formatDate(payment.dueDate) : payment.timing && payment.timing !== 'date' ? paymentTimingLabels[payment.timing] : ''
   const overdue = payment.status !== 'paid' && isOverdue(payment.dueDate)
   const rowLabel = compact ? payment.label.split(' — ').slice(1).join(' — ') || payment.label : payment.label
-  const commitAmount = async () => {
-    const next = amount ? Number(amount) : undefined
-    if (next === payment.amount) return
-    await db.payments.update(payment.id, { amount: next, updatedAt: nowIso() })
+
+  const beginEdit = () => {
+    setLabel(payment.label)
+    setAmount(payment.amount?.toString() ?? '')
+    setPercent(payment.percent?.toString() ?? '')
+    setTiming(payment.dueDate ? 'date' : payment.timing ?? 'date')
+    setDueDate(payment.dueDate ?? '')
+    setError('')
+    setEditing(true)
+  }
+  const cancelEdit = () => { setError(''); setEditing(false) }
+  const saveEdit = async () => {
+    if (saving) return
+    const nextLabel = label.trim()
+    const nextAmount = amount.trim() === '' ? undefined : Number(amount)
+    const nextPercent = percent.trim() === '' ? undefined : Number(percent)
+    if (!nextLabel) return setError('Add a payment label.')
+    if (nextAmount !== undefined && (!Number.isFinite(nextAmount) || nextAmount < 0)) return setError('Enter a valid amount.')
+    if (payment.kind === 'share' && nextPercent !== undefined && (!Number.isFinite(nextPercent) || nextPercent < 0)) return setError('Enter a valid share percentage.')
+    setSaving(true); setError('')
+    try {
+      await db.payments.update(payment.id, {
+        label: nextLabel,
+        amount: nextAmount,
+        percent: payment.kind === 'share' ? nextPercent : payment.percent,
+        timing,
+        dueDate: timing === 'date' ? (dueDate || undefined) : undefined,
+        updatedAt: nowIso(),
+        updatedBy: currentUser
+      })
+      setEditing(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update this payment.')
+    } finally {
+      setSaving(false)
+    }
   }
   return <div className={`payment-row ${compact ? 'compact' : ''}`}>
-    <span className="payment-label"><strong>{rowLabel}</strong>{timing && <small className={overdue ? 'overdue' : ''}>{timing}</small>}</span>
-    {payment.kind === 'share'
-      ? <span className="payment-amount"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} onBlur={commitAmount} placeholder={payment.percent ? `${payment.percent}%` : '₽'} /></span>
-      : <span className="payment-amount">{payment.amount ? formatMoney(payment.amount) : '—'}</span>}
+    <span className="payment-label"><strong>{rowLabel}</strong>{displayTiming && <small className={overdue ? 'overdue' : ''}>{displayTiming}</small>}</span>
+    <span className="payment-amount">{payment.amount !== undefined ? formatMoney(payment.amount) : payment.percent ? `${payment.percent}%` : '—'}</span>
+    <button type="button" aria-label={`Edit ${payment.label}`} aria-expanded={editing} className="pay-edit" onClick={editing ? cancelEdit : beginEdit}><Pencil /></button>
     <button type="button" className={`pay-pill ${payment.status}`} onClick={onToggle}>{payment.status === 'paid' ? 'Paid' : 'Due'}</button>
     <button type="button" aria-label={`Remove ${payment.label}`} className="pay-remove" onClick={onRemove}><Trash2 /></button>
+    {editing && <div className="payment-inline-editor" onKeyDown={(event) => {
+      if (event.key === 'Escape') { event.preventDefault(); cancelEdit() }
+      else if (event.key === 'Enter') { event.preventDefault(); saveEdit() }
+    }}>
+      <div className="payment-inline-fields">
+        <label><span>Label</span><input value={label} onChange={(event) => setLabel(event.target.value)} autoFocus /></label>
+        <label><span>Amount ₽</span><input type="number" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0" /></label>
+        {payment.kind === 'share' && <label><span>Share %</span><input type="number" min="0" value={percent} onChange={(event) => setPercent(event.target.value)} placeholder="0" /></label>}
+        <label><span>When</span><select value={timing} onChange={(event) => setTiming(event.target.value as PaymentTiming)}>{paymentTimings.map((item) => <option key={item} value={item}>{paymentTimingLabels[item]}</option>)}</select></label>
+        {timing === 'date' && <label><span>Due date</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>}
+      </div>
+      {error && <p className="payment-inline-error">{error}</p>}
+      <div className="payment-inline-actions"><button type="button" onClick={cancelEdit} disabled={saving}>Cancel</button><button type="button" className="primary-button" onClick={saveEdit} disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</button></div>
+    </div>}
   </div>
 }
 

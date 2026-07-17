@@ -600,18 +600,29 @@ h3 { font-size: .95rem; }
 .payments-summary { font-family: var(--mono); font-size: .74rem; color: var(--ok); }
 .payment-rows { display: grid; gap: 6px; }
 .payments-empty { margin: 0; color: var(--subtle); font-size: .8rem; }
-.payment-row { display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; gap: 10px; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--soft-line); border-radius: 9px; }
+.payment-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; grid-template-areas: 'label amount edit status remove' 'editor editor editor editor editor'; align-items: center; gap: 10px; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--soft-line); border-radius: 9px; }
 .payment-row.compact { background: transparent; border: 0; border-bottom: 1px solid var(--soft-line); border-radius: 0; padding: 7px 4px; }
-.payment-label { display: grid; gap: 2px; min-width: 0; }
+.payment-label { grid-area: label; display: grid; gap: 2px; min-width: 0; }
 .payment-label strong { font-size: .84rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
 .payment-label small { color: var(--subtle); font-family: var(--mono); font-size: .66rem; }
-.payment-amount { font-family: var(--mono); font-size: .78rem; color: var(--ink); white-space: nowrap; }
-.payment-amount input { width: 86px; padding: 5px 7px !important; font-family: var(--mono); font-size: .74rem; text-align: right; }
-.pay-pill { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 11px; font-family: var(--mono); font-size: .64rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.payment-amount { grid-area: amount; font-family: var(--mono); font-size: .78rem; color: var(--ink); white-space: nowrap; }
+.pay-edit { grid-area: edit; border: 0; background: transparent; padding: 5px; color: var(--subtle); }
+.pay-edit:hover, .pay-edit[aria-expanded='true'] { color: var(--accent); }
+.pay-edit svg, .pay-remove svg { width: 16px; height: 16px; }
+.pay-pill { grid-area: status; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 11px; font-family: var(--mono); font-size: .64rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
 .pay-pill.paid { background: rgba(95, 224, 168, .14); border-color: rgba(95, 224, 168, .4); color: var(--ok); }
 .pay-pill.due { color: var(--warning); border-color: rgba(255, 201, 107, .35); }
-.pay-remove { border: 0; background: transparent; padding: 5px; color: var(--subtle); }
+.pay-remove { grid-area: remove; border: 0; background: transparent; padding: 5px; color: var(--subtle); }
 .pay-remove:hover { color: var(--danger); }
+.payment-inline-editor { grid-area: editor; display: grid; gap: 10px; min-width: 0; padding-top: 10px; border-top: 1px solid var(--soft-line); }
+.payment-inline-fields { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(90px, .7fr); gap: 10px; }
+.payment-inline-fields label > span { display: block; margin-bottom: 4px; color: var(--muted); font-size: .68rem; font-weight: 500; }
+.payment-inline-fields input, .payment-inline-fields select { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; background: var(--surface); color: var(--ink); font-size: .76rem; }
+.payment-inline-fields input[type='number'] { font-family: var(--mono); }
+.payment-inline-error { margin: 0; color: var(--danger); font-size: .72rem; }
+.payment-inline-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.payment-inline-actions button { border: 0; background: transparent; padding: 7px 9px; color: var(--muted); font-size: .74rem; }
+.payment-inline-actions .primary-button { background: var(--accent); color: #061014; }
 .payment-group { border: 1px solid var(--soft-line); border-radius: 9px; background: var(--surface-2); overflow: hidden; }
 .payment-group-head { display: flex; align-items: center; }
 .payment-group-head .row-main { flex: 1; display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 0; background: transparent; text-align: left; color: var(--ink); }
@@ -777,6 +788,10 @@ h3 { font-size: .95rem; }
   .structured-row { align-items: flex-start; flex-wrap: wrap; }
   .structured-row .status-select { margin-left: 44px; }
   .form-row { grid-template-columns: 1fr; }
+  .payments-head { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .payment-row { grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-areas: 'label edit status remove' 'amount amount amount amount' 'editor editor editor editor'; gap: 7px 9px; }
+  .payment-amount { justify-self: start; }
+  .payment-inline-fields { grid-template-columns: 1fr; }
   .performance-entry-fields, .performance-kpis { grid-template-columns: 1fr; }
   .performance-kpis article { border-right: 0; border-bottom: 1px solid var(--soft-line); }
   .performance-kpis article:last-child { border-bottom: 0; }
